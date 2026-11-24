@@ -1,0 +1,58 @@
+{% extends "base.html.j2" %}
+{% block body %}
+<p class="meta">全レポートの目次。直近 1 か月は展開、それ以前は月単位で折りたたんでいます
+（JavaScript 不要）。</p>
+
+{% if latest %}
+<h2>最新</h2>
+<div class="panel">
+{% for kind, item in latest.items() %}
+  {% if item %}
+  <div class="archive-row">
+    <a href="{{ item.href }}">{{ labels.period_short[kind] }} {{ item.label }}</a>
+    <span class="s {{ item.score | cls }}">{{ item.score_text }}</span>
+    <span class="meta">{{ item.note }}</span>
+  </div>
+  {% endif %}
+{% endfor %}
+</div>
+{% endif %}
+
+{% for kind in ['yearly', 'monthly', 'weekly', 'daily'] %}
+{% set groups = sections[kind] %}
+{% if groups %}
+<h2>{{ labels.period_long[kind] }}</h2>
+{% for group in groups %}
+  {% if group.open %}
+    <div class="panel">
+      <strong>{{ group.title }}</strong>
+      {% for item in group.entries %}
+      <div class="archive-row">
+        <a href="{{ item.href }}">{{ item.label }}</a>
+        <span class="s {{ item.score | cls }}">{{ item.score_text }}</span>
+        <span class="meta">{{ item.note }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <details>
+      <summary>{{ group.title }}（{{ group.entries | length }}件）</summary>
+      <div>
+      {% for item in group.entries %}
+        <div class="archive-row">
+          <a href="{{ item.href }}">{{ item.label }}</a>
+          <span class="s {{ item.score | cls }}">{{ item.score_text }}</span>
+          <span class="meta">{{ item.note }}</span>
+        </div>
+      {% endfor %}
+      </div>
+    </details>
+  {% endif %}
+{% endfor %}
+{% endif %}
+{% endfor %}
+
+{% if not sections['daily'] %}
+<div class="panel"><p>まだレポートがありません。</p></div>
+{% endif %}
+{% endblock %}

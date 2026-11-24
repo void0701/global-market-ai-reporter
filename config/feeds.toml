@@ -1,0 +1,71 @@
+# RSS フィード定義
+# 検証日: 2026-11-22（日曜）/ 検証結果は docs/08-rss-feeds.md
+# weight: 重複排除でクラスタ代表を選ぶ際の媒体優先度（高いほど優先）
+
+[[feed]]
+name = "Federal Reserve"
+url = "https://www.federalreserve.gov/feeds/press_all.xml"
+weight = 1.2            # 一次情報を最優先
+category = "primary"
+
+[[feed]]
+name = "CNBC Top News"
+url = "https://www.cnbc.com/id/100003114/device/rss/rss.html"
+weight = 1.0
+category = "market"
+
+[[feed]]
+name = "CNBC Economy"
+url = "https://www.cnbc.com/id/20910258/device/rss/rss.html"
+weight = 1.0
+category = "economy"
+
+[[feed]]
+name = "CNBC Markets"
+url = "https://www.cnbc.com/id/10000664/device/rss/rss.html"
+weight = 1.0
+category = "market"
+
+[[feed]]
+name = "Financial Times"
+url = "https://www.ft.com/rss/home"
+weight = 1.0
+category = "finance"
+paywall = true          # 出典表記に「要購読」ラベルを付ける
+
+[[feed]]
+name = "NYT Business"
+url = "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml"
+weight = 0.9
+category = "business"
+
+[[feed]]
+name = "NYT Economy"
+url = "https://rss.nytimes.com/services/xml/rss/nyt/Economy.xml"
+weight = 0.9
+category = "economy"
+
+[[feed]]
+name = "MarketWatch Top Stories"
+url = "http://feeds.marketwatch.com/marketwatch/topstories/"
+weight = 0.9
+category = "market"
+
+[[feed]]
+name = "BBC Business"
+url = "https://feeds.bbci.co.uk/news/business/rss.xml"
+weight = 0.8
+category = "world"
+
+[[feed]]
+name = "Seeking Alpha Market Currents"
+url = "https://seekingalpha.com/market_currents.xml"
+weight = 0.8
+category = "market"
+has_summary = false     # タイトルのみ。category からティッカーを抽出する
+
+[[feed]]
+name = "The Guardian Business"
+url = "https://www.theguardian.com/uk/business/rss"
+weight = 0.7
+category = "world"

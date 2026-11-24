@@ -1,0 +1,83 @@
+# 設定の優先順: CLIオプション > 環境変数 > このファイル
+
+[bedrock]
+# 環境変数 BEDROCK_MODEL_ID で上書き可（Phase 2 で Terraform が Lambda 環境変数として注入）
+model_id = "anthropic.claude-opus-5"
+region = "ap-northeast-1"            # 環境変数 AWS_REGION で上書き可
+# ストリーミングを使うため非ストリーミングの上限（約21,333）に縛られない。
+# 日本語レポート + 思考トークンで 15K 前後になりうるため余裕を持たせる
+max_tokens = 32000
+thinking_display = "summarized"      # 課金は display 設定によらず同一。推論要約を保存する
+
+[collection]
+window_hours = 24
+max_articles_to_analyze = 15
+max_per_feed = 4                     # 1媒体からの選抜上限。多様性の担保（下記）
+summary_truncate_chars = 200         # 全フィード一律（Guardian 対策）
+stale_feed_warn_hours = 48           # これより古いフィードは警告（WSJ型の故障検知）
+fetch_timeout_sec = 20
+# max_per_feed の根拠: FT の rss/home は総合フィードでコラム・社説を多く含み、
+# 上限なしでは選抜15件の過半を占めてS&P500と無関係な記事が混入した（実測）。
+
+max_workers = 8
+
+[dedupe]
+similarity_threshold = 0.75
+
+[output]
+max_news_analysis = 5
+x_post_max_fullwidth_chars = 140
+dir = "./output"                     # 環境変数 MARKET_REPORT_OUTPUT_DIR で上書き可
+
+[market]
+# AI に渡す系列（15）。保存は下の all_symbols 全件（docs/11-data-retention.md）
+ai_symbols = [
+  "^GSPC", "^IXIC", "^DJI",
+  "ACWI", "2559.T", "USDJPY=X",
+  "^VIX", "^TNX", "^TYX",
+  "EWJ", "VGK", "EEM",
+  "CL=F", "GC=F", "DX-Y.NYB",
+]
+
+[market.symbols]
+# ラベルは日次JSON・レポートの表示に使う
+"^GSPC"     = { label = "S&P500",            group = "index"     }
+"^IXIC"     = { label = "NASDAQ総合",         group = "index"     }
+"^DJI"      = { label = "ダウ工業株30種",      group = "index"     }
+"^RUT"      = { label = "ラッセル2000",        group = "index"     }
+"ACWI"      = { label = "MSCI ACWI (USD)",   group = "global"    }
+"VT"        = { label = "VT 全世界株",         group = "global"    }
+"URTH"      = { label = "MSCI World",        group = "global"    }
+"VEU"       = { label = "全世界株 ex-US",      group = "global"    }
+"2559.T"    = { label = "MAXIS全世界株(円)",   group = "global_jpy" }
+"1554.T"    = { label = "上場世界株 ex-JP(円)", group = "global_jpy" }
+"USDJPY=X"  = { label = "USD/JPY",           group = "fx"        }
+"EURJPY=X"  = { label = "EUR/JPY",           group = "fx"        }
+"EURUSD=X"  = { label = "EUR/USD",           group = "fx"        }
+"^VIX"      = { label = "VIX",               group = "vol"       }
+"^VXN"      = { label = "VXN (NASDAQ)",      group = "vol"       }
+"^IRX"      = { label = "米13週債利回り",      group = "rates"     }
+"^FVX"      = { label = "米5年債利回り",       group = "rates"     }
+"^TNX"      = { label = "米10年債利回り",      group = "rates"     }
+"^TYX"      = { label = "米30年債利回り",      group = "rates"     }
+"XLK"       = { label = "情報技術",            group = "sector"    }
+"XLF"       = { label = "金融",               group = "sector"    }
+"XLV"       = { label = "ヘルスケア",          group = "sector"    }
+"XLY"       = { label = "一般消費財",          group = "sector"    }
+"XLC"       = { label = "通信サービス",        group = "sector"    }
+"XLI"       = { label = "資本財",              group = "sector"    }
+"XLP"       = { label = "生活必需品",          group = "sector"    }
+"XLE"       = { label = "エネルギー",          group = "sector"    }
+"XLU"       = { label = "公共事業",            group = "sector"    }
+"XLRE"      = { label = "不動産",              group = "sector"    }
+"XLB"       = { label = "素材",                group = "sector"    }
+"SPY"       = { label = "SPY 米国",            group = "region"    }
+"EWJ"       = { label = "日本株",              group = "region"    }
+"VGK"       = { label = "欧州株",              group = "region"    }
+"EEM"       = { label = "新興国株",            group = "region"    }
+"FXI"       = { label = "中国株",              group = "region"    }
+"INDA"      = { label = "インド株",            group = "region"    }
+"CL=F"      = { label = "WTI原油",            group = "commodity" }
+"GC=F"      = { label = "金",                 group = "commodity" }
+"HG=F"      = { label = "銅",                 group = "commodity" }
+"DX-Y.NYB"  = { label = "ドル指数",            group = "macro"     }

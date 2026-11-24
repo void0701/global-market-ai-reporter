@@ -1,0 +1,46 @@
+[project]
+name = "market-report"
+version = "0.1.0"
+description = "米国・世界ニュースAI解析＆自動レポート配信パイプライン"
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic[bedrock]>=2.0",
+    "feedparser>=6.0",
+    "jinja2>=3.1",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+]
+
+[project.optional-dependencies]
+# Phase 1 のみ。市況取得は既定で stdlib の HttpChartProvider を使うため通常は不要
+market = ["yfinance>=0.2"]
+dev = ["pytest>=8.0", "ruff>=0.6", "mypy>=1.11"]
+
+[project.scripts]
+market-report = "market_report.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+market_report = ["rendering/templates/*.j2"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_ignores = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

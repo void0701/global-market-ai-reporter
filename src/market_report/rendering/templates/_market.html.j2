@@ -1,0 +1,60 @@
+{% macro market_block(market, settings, labels) %}
+<h2>市況</h2>
+<p class="meta">基準日 {{ market.reference_date }}（米国株の最新営業日）。
+為替・商品はほぼ24時間取引されるため、寄与度分解が異なる期間の比較にならないよう全系列をこの日付に揃えています。</p>
+<div class="tbl-scroll">
+<table>
+  <thead><tr><th>系列</th><th class="num">終値</th><th class="num">前日比</th></tr></thead>
+  <tbody>
+  {% for sym in settings.ai_symbols %}{% set q = market.quotes.get(sym) %}{% if q %}
+    <tr>
+      <td>{{ q.label }} <span class="meta">{{ sym }}</span></td>
+      <td class="num">{{ q.close | num }}</td>
+      <td class="num {{ q.change_pct | cls }}">{{ q.change_pct | pct }}</td>
+    </tr>
+  {% endif %}{% endfor %}
+  </tbody>
+</table>
+</div>
+
+{% set gv = market.global_view %}
+{% if gv.jpy_theoretical_change_pct is not none %}
+<h3>オルカン（円建て全世界株式）の内訳</h3>
+<div class="tbl-scroll">
+<table>
+  <tbody>
+    <tr><td>円建て変化率（ACWI × USD/JPY の理論値）</td>
+        <td class="num {{ gv.jpy_theoretical_change_pct | cls }}"><strong>{{ gv.jpy_theoretical_change_pct | pct }}</strong></td></tr>
+    <tr><td>　うち 株価要因（ACWI・ドル建て）</td>
+        <td class="num {{ gv.contribution_equity_pct | cls }}">{{ gv.contribution_equity_pct | pct }}</td></tr>
+    <tr><td>　うち 為替要因（USD/JPY・円安がプラス）</td>
+        <td class="num {{ gv.contribution_fx_pct | cls }}">{{ gv.contribution_fx_pct | pct }}</td></tr>
+    {% if gv.etf_jpy_change_pct is not none %}
+    <tr><td>参考: 2559.T 実測（{{ gv.etf_jpy_date }}）</td>
+        <td class="num {{ gv.etf_jpy_change_pct | cls }}">{{ gv.etf_jpy_change_pct | pct }}</td></tr>
+    {% endif %}
+  </tbody>
+</table>
+</div>
+{% if gv.etf_jpy_change_pct is not none %}
+<p class="meta">{{ gv.etf_lag_note }}。レポート上の円建て変化率は最新の米国セッションを反映する理論値を採用しています。</p>
+{% endif %}
+{% endif %}
+{% endmacro %}
+
+{% macro spark(series) %}
+{% if series %}
+<div class="spark">
+{% for _, v in series %}<i class="{{ 'p' if v > 0 else ('n' if v < 0 else '') }}"
+  style="height:{{ (12 + (v | abs) * 5) }}px" title="{{ v }}"></i>{% endfor %}
+</div>
+{% endif %}
+{% endmacro %}
+
+{% macro counts(title, mapping, labels) %}
+{% if mapping %}
+<p><strong>{{ title }}</strong><br>
+{% for k, v in mapping | dictsort(by='value', reverse=true) %}<span class="chip k">{{ labels.get(k, k) }} {{ v }}</span>{% endfor %}
+</p>
+{% endif %}
+{% endmacro %}

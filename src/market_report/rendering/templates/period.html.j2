@@ -1,0 +1,168 @@
+{% extends "base.html.j2" %}
+{% import "_market.html.j2" as m %}
+{% block body %}
+
+{% if dry_run %}
+<div class="warn"><strong>DRY-RUN で生成されたレポートです。</strong>
+Bedrock は呼び出されておらず、分析内容に意味はありません。</div>
+{% endif %}
+
+<p class="meta">{{ labels.period[record.period_type] }}レポート {{ record.period_label }}
+（{{ record.period_start }} 〜 {{ record.period_end }}）/ 集計 {{ s.days }} 日分</p>
+
+{% if s.missing_dates %}
+<div class="warn">以下の日のデータが欠けています（実行されなかった日・米国の祝日を含む）:
+{{ s.missing_dates | join(', ') }}</div>
+{% endif %}
+
+<div class="panel score">
+  <div class="card">
+    <div class="label">S&amp;P500 期間騰落率</div>
+    <div class="value {{ s.spx_period_change_pct | cls }}">{{ s.spx_period_change_pct | pct }}</div>
+    <div class="note">センチメント平均 {{ s.sentiment_avg }}（{{ s.sentiment_min }}〜{{ s.sentiment_max }}）</div>
+  </div>
+  <div class="card">
+    <div class="label">円建て全世界株式（オルカン）</div>
+    <div class="value {{ s.jpy_global_period_change_pct | cls }}">{{ s.jpy_global_period_change_pct | pct }}</div>
+    <div class="note">センチメント平均 {{ s.acwi_sentiment_avg }}</div>
+  </div>
+</div>
+
+<h2>リターンの寄与度分解</h2>
+<p class="meta">円建てリターン ≈ ドル建て株価の変化率 + 為替（円安方向）の変化率。
+ドル建てで下落しても円建てで上昇する状況が頻繁に起こるため、この分解が円建て投資家には本質的です。</p>
+<div class="tbl-scroll">
+<table>
+  <tbody>
+    <tr><td>円建て全世界株（理論値）</td>
+        <td class="num {{ s.jpy_global_period_change_pct | cls }}"><strong>{{ s.jpy_global_period_change_pct | pct }}</strong></td></tr>
+    <tr><td>　うち 株価要因（ACWI・ドル建て）</td>
+        <td class="num {{ s.contribution_equity_pct | cls }}">{{ s.contribution_equity_pct | pct }}</td></tr>
+    <tr><td>　うち 為替要因（USD/JPY）</td>
+        <td class="num {{ s.contribution_fx_pct | cls }}">{{ s.contribution_fx_pct | pct }}</td></tr>
+    <tr><td>S&amp;P500 と ACWI の差</td>
+        <td class="num">{{ s.spx_vs_acwi_gap_pp | pct('pp') }}</td></tr>
+  </tbody>
+</table>
+</div>
+<p>{{ a.global_recap }}</p>
+
+<h2>センチメント推移</h2>
+{{ m.spark(s.sentiment_series) }}
+<p>{{ a.sentiment_trend_summary }}</p>
+
+<h2>市況の振り返り</h2>
+<div class="tbl-scroll">
+<table>
+  <tbody>
+    <tr><td>VIX 平均 / 最大</td><td class="num">{{ s.vix_avg | num }} / {{ s.vix_max | num }}</td></tr>
+    <tr><td>米10年債利回りの期間変化</td><td class="num">{{ s.tnx_change_bp | pct('bp') }}</td></tr>
+    {% if s.spx_best_day %}<tr><td>期間中で最も良かった日</td>
+      <td class="num {{ s.spx_best_day[1] | cls }}">{{ s.spx_best_day[0] }} {{ s.spx_best_day[1] | pct }}</td></tr>{% endif %}
+    {% if s.spx_worst_day %}<tr><td>期間中で最も悪かった日</td>
+      <td class="num {{ s.spx_worst_day[1] | cls }}">{{ s.spx_worst_day[0] }} {{ s.spx_worst_day[1] | pct }}</td></tr>{% endif %}
+  </tbody>
+</table>
+</div>
+<p>{{ a.market_recap }}</p>
+
+<h2>主要テーマ</h2>
+{% for t in a.key_themes %}
+<div class="news">
+  <h3>{{ loop.index }}. {{ t.title }} <span class="chip k">{{ labels.persistence[t.persistence] }}</span></h3>
+  <p>{{ t.narrative }}</p>
+  {% if t.related_dates %}<p class="meta">関連日: {{ t.related_dates | join(', ') }}</p>{% endif %}
+</div>
+{% endfor %}
+
+<h2>判定の分布</h2>
+{{ m.counts('方向', s.direction_counts, labels.direction) }}
+{{ m.counts('時間軸', s.horizon_counts, labels.horizon) }}
+{{ m.counts('ニュース分類', s.news_category_counts, labels.news_category) }}
+{{ m.counts('影響セクター', s.sector_counts, labels.sector) }}
+{{ m.counts('予想との比較', s.surprise_counts, labels.surprise) }}
+{{ m.counts('新規性', s.novelty_counts, labels.novelty) }}
+{{ m.counts('地域', s.region_counts, labels.region) }}
+{{ m.counts('影響範囲', s.scope_counts, labels.scope) }}
+{{ m.counts('円相場への影響', s.fx_impact_counts, labels.fx_impact) }}
+{% if s.ticker_counts %}
+<p><strong>言及の多い銘柄</strong><br>
+{% for k, v in s.ticker_counts | dictsort(by='value', reverse=true) %}{% if loop.index <= 12 %}<span class="chip k">{{ k }} {{ v }}</span>{% endif %}{% endfor %}
+</p>
+{% endif %}
+
+{% if s.region_etf_changes or s.sector_etf_changes %}
+<h2>地域別・セクター別の実績</h2>
+<p class="meta">AI には渡さず保存のみの系列。判定（地域・セクター）との突き合わせに使えます。</p>
+<div class="tbl-scroll">
+<table>
+  <thead><tr><th>区分</th><th>対象</th><th class="num">期間騰落率</th></tr></thead>
+  <tbody>
+  {% for k, v in s.region_etf_changes | dictsort(by='value', reverse=true) %}
+    <tr><td>地域</td><td>{{ k }}</td><td class="num {{ v | cls }}">{{ v | pct }}</td></tr>
+  {% endfor %}
+  {% for k, v in s.sector_etf_changes | dictsort(by='value', reverse=true) %}
+    <tr><td>セクター</td><td>{{ k }}</td><td class="num {{ v | cls }}">{{ v | pct }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+
+<h2>予測の振り返り</h2>
+<div class="warn">
+  <strong>的中率は単独では解釈できません。</strong>
+  S&amp;P500 には長期的な上昇バイアスがあるため、「常に上昇と判定する」だけで 50% を超えます。
+  意味を持つのはベンチマークとの差（edge）のみです。またこの指標は方向のみの評価で騰落幅を見ておらず、
+  因果を特定するものでもありません。本来の価値は「当たったか」ではなく
+  <strong>判定に系統的な偏りがないかの検出</strong>にあります。
+</div>
+<div class="tbl-scroll">
+<table>
+  <thead><tr><th>対象</th><th class="num">的中率</th><th class="num">常に上昇</th><th class="num">常に下落</th><th class="num">edge</th><th class="num">n</th></tr></thead>
+  <tbody>
+  {% for name, fc in [('S&P500', s.forecast_spx), ('オルカン（円建て）', s.forecast_acwi)] %}
+    <tr>
+      <td>{{ name }}</td>
+      <td class="num">{{ fc.hit_rate | rate }}</td>
+      <td class="num meta">{{ fc.always_up_hit_rate | rate }}</td>
+      <td class="num meta">{{ fc.always_down_hit_rate | rate }}</td>
+      <td class="num {{ fc.edge_vs_always_up_pp | cls }}">{{ fc.edge_vs_always_up_pp | pct('pp') }}</td>
+      <td class="num">{{ fc.sample_size }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% if s.forecast_spx.note %}<p class="meta">{{ s.forecast_spx.note }}</p>{% endif %}
+<p>{{ a.forecast_review }}</p>
+
+<h2>次期間の見通し</h2>
+<p>{{ a.outlook }}</p>
+
+<h2>詳細レポート</h2>
+{{ a.report_markdown | markdown }}
+
+<details>
+  <summary>出力品質の監視指標（運用用）</summary>
+  <div>
+    <p class="meta">充填率が極端なフィールドは、モデルが機械的に埋めているサインです。</p>
+    <div class="tbl-scroll">
+    <table>
+      <tbody>
+      {% for k, v in s.field_fill_rates.items() %}
+        <tr><td>{{ k }}</td><td class="num">{{ v | rate }}</td></tr>
+      {% endfor %}
+        <tr><td>波及メカニズムの平均文字数</td><td class="num">{{ s.transmission_avg_chars }}</td></tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+</details>
+
+<h2>X 投稿文</h2>
+<div class="panel">
+  <p style="white-space:pre-wrap">{{ record.x_post_full }}</p>
+  <p class="meta">全角 {{ record.x_post_full | fullwidth }} 文字</p>
+</div>
+{% endblock %}

@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.py[cod]
+.env
+output/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+*.egg-info/
+.terraform/
+*.tfstate
+*.tfstate.*
+x-credentials.json
+.DS_Store

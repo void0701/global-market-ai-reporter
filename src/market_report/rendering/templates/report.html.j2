@@ -1,0 +1,99 @@
+{% extends "base.html.j2" %}
+{% import "_market.html.j2" as m %}
+{% block body %}
+
+{% if dry_run %}
+<div class="warn"><strong>DRY-RUN で生成されたレポートです。</strong>
+Bedrock は呼び出されておらず、分析内容に意味はありません。</div>
+{% endif %}
+
+<p class="meta">{{ record.date }} 版（日本時間の朝に作成）</p>
+
+<div class="panel score">
+  <div class="card">
+    <div class="label">S&amp;P500 センチメント</div>
+    <div class="value {{ a.sentiment_score | cls }}">{{ '%+d' % a.sentiment_score }}</div>
+    <div class="note">{{ a.sentiment_summary }}</div>
+  </div>
+  <div class="card">
+    <div class="label">オルカン（円建て全世界株式）センチメント</div>
+    <div class="value {{ a.acwi_sentiment_score | cls }}">{{ '%+d' % a.acwi_sentiment_score }}</div>
+    <div class="note">{{ a.acwi_sentiment_summary }}</div>
+  </div>
+</div>
+
+<div class="panel">
+  <strong>為替の見通し</strong>
+  <p>{{ a.fx_outlook }}</p>
+</div>
+
+{{ m.market_block(record.market, settings, labels) }}
+
+<h2>重要ニュース（{{ a.news_analysis | length }}件）</h2>
+{% for n in a.news_analysis %}
+<div class="news {{ n.direction }}">
+  <h3>{{ loop.index }}. {{ n.headline }}</h3>
+  <div class="tags">
+    <span class="chip k">{{ labels.direction[n.direction] }}</span>
+    <span class="chip">{{ labels.horizon[n.horizon] }}</span>
+    <span class="chip">確度 {{ labels.confidence[n.confidence] }}</span>
+    <span class="chip">影響 {{ labels.magnitude[n.expected_magnitude] }}</span>
+    <span class="chip">{{ labels.news_category[n.news_category] }}</span>
+    <span class="chip">{{ labels.region[n.region_focus] }}</span>
+    <span class="chip">{{ labels.scope[n.scope] }}</span>
+    <span class="chip">{{ labels.fx_impact[n.fx_impact] }}</span>
+    <span class="chip">{{ labels.surprise[n.surprise_direction] }}</span>
+    <span class="chip">{{ labels.novelty[n.novelty] }}</span>
+    {% for s in n.affected_sectors %}<span class="chip">{{ labels.sector[s] }}</span>{% endfor %}
+    {% for t in n.mentioned_tickers %}<span class="chip k">{{ t }}</span>{% endfor %}
+  </div>
+  <p>{{ n.summary }}</p>
+  <p class="mech"><strong>S&amp;P500 への波及</strong>: {{ n.transmission }}</p>
+  {% set nums = n.key_numbers | selectattr('actual') | list %}
+  {% if nums %}
+  <div class="tbl-scroll">
+  <table>
+    <thead><tr><th>指標</th><th class="num">実績</th><th class="num">市場予想</th><th class="num">前回</th></tr></thead>
+    <tbody>
+    {% for k in nums %}
+      <tr><td>{{ k.label }}</td><td class="num">{{ k.actual }}{{ k.unit }}</td>
+          <td class="num">{{ k.consensus or '—' }}{{ k.unit if k.consensus }}</td>
+          <td class="num">{{ k.previous or '—' }}{{ k.unit if k.previous }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+  {% if n.source_urls %}
+  <p class="src">出典:
+    {% for u in n.source_urls %}<a href="{{ u }}" rel="noopener nofollow">{{ u | host }}</a>{{ ' / ' if not loop.last }}{% endfor %}
+  </p>
+  {% endif %}
+</div>
+{% endfor %}
+
+{% if a.watch_list %}
+<h2>監視リスト</h2>
+<ul>
+{% for w in a.watch_list %}
+  <li><strong>{{ w.label }}</strong>（{{ w.when }}）— {{ w.why }}</li>
+{% endfor %}
+</ul>
+{% endif %}
+
+<h2>詳細レポート</h2>
+{{ a.report_markdown | markdown }}
+
+<h2>X 投稿文</h2>
+<div class="panel">
+  <p style="white-space:pre-wrap">{{ record.x_post_full }}</p>
+  <p class="meta">全角 {{ record.x_post_full | fullwidth }} 文字（上限 {{ settings.x_post_max_fullwidth_chars }}）</p>
+</div>
+
+{% if record.article_counts %}
+<h2>収集の内訳</h2>
+<p>
+  {% for k, v in record.article_counts.items() %}<span class="chip">{{ k }} {{ v }}</span>{% endfor %}
+</p>
+{% endif %}
+{% endblock %}
