@@ -1,9 +1,13 @@
 # 設定の優先順: CLIオプション > 環境変数 > このファイル
 
 [bedrock]
+# provider: "anthropic"（Claude API 直接）または "bedrock"（Amazon Bedrock）
+# 環境変数 MARKET_REPORT_PROVIDER / CLI の --provider で上書き可
+provider = "anthropic"
 # 環境変数 BEDROCK_MODEL_ID で上書き可（Phase 2 で Terraform が Lambda 環境変数として注入）
-model_id = "anthropic.claude-opus-5"
-region = "ap-northeast-1"            # 環境変数 AWS_REGION で上書き可
+# provider="anthropic" なら "claude-opus-5"、"bedrock" なら "anthropic.claude-opus-5"
+model_id = "claude-opus-5"
+region = "ap-southeast-2"            # 新サインアップ体験ではプロジェクトのリージョンを変更できないため ap-southeast-2。環境変数 AWS_REGION で上書き可
 # ストリーミングを使うため非ストリーミングの上限（約21,333）に縛られない。
 # 日本語レポート + 思考トークンで 15K 前後になりうるため余裕を持たせる
 max_tokens = 32000

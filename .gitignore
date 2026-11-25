@@ -1,14 +1,28 @@
+# Python
 .venv/
 __pycache__/
 *.py[cod]
-.env
-output/
+*.egg-info/
 .ruff_cache/
 .mypy_cache/
 .pytest_cache/
-*.egg-info/
+
+# 生成物・秘密情報
+.env
+output/
+build/
+x-credentials.json
+key.json
+
+# Terraform
 .terraform/
 *.tfstate
 *.tfstate.*
-x-credentials.json
+infra/spike/.probe_lambda.zip
+# 個人情報・環境固有の値を書くことがあるため除外（リポジトリは public）
+*.tfvars
+*.auto.tfvars
+!infra/envs/*/example.tfvars
+
+# macOS
 .DS_Store

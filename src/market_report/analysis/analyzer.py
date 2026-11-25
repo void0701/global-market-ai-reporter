@@ -90,6 +90,7 @@ class Analyzer:
                 region=self.settings.region,
                 max_tokens=self.settings.max_tokens,
                 thinking_display=self.settings.thinking_display,
+                provider=self.settings.provider,
             )
         return self._bedrock
 
@@ -114,9 +115,9 @@ class Analyzer:
             return self._finish_daily(output, prefix, budget), None, system, user
 
         result = self.bedrock.run(system, user, AiDailyOutput)
-        output = result.parsed
-        assert isinstance(output, AiDailyOutput)
-        output = self._trim_news(output)
+        parsed = result.parsed
+        assert isinstance(parsed, AiDailyOutput)
+        output = self._trim_news(parsed)
         return self._finish_daily(output, prefix, budget), result, system, user
 
     def _trim_news(self, output: AiDailyOutput) -> AiDailyOutput:
@@ -163,10 +164,10 @@ class Analyzer:
             return output, None, system, user
 
         result = self.bedrock.run(system, user, AiPeriodOutput)
-        output = result.parsed
-        assert isinstance(output, AiPeriodOutput)
-        output.x_post_text = self._fit_body(output.x_post_text, budget, period_type)
-        return output, result, system, user
+        parsed = result.parsed
+        assert isinstance(parsed, AiPeriodOutput)
+        parsed.x_post_text = self._fit_body(parsed.x_post_text, budget, period_type)
+        return parsed, result, system, user
 
     # ------------------------------------------------------------------
     # X 投稿文の文字数

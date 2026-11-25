@@ -121,11 +121,11 @@ def build_stats(
         )
 
     daily_spx = [
-        (r.date, r.market.change_pct(SPX)) for r in records if r.market.change_pct(SPX) is not None
+        (r.date, change) for r in records if (change := r.market.change_pct(SPX)) is not None
     ]
     if daily_spx:
-        stats.spx_best_day = max(daily_spx, key=lambda kv: kv[1])  # type: ignore[arg-type,return-value]
-        stats.spx_worst_day = min(daily_spx, key=lambda kv: kv[1])  # type: ignore[arg-type,return-value]
+        stats.spx_best_day = max(daily_spx, key=lambda kv: kv[1])
+        stats.spx_worst_day = min(daily_spx, key=lambda kv: kv[1])
 
     vix_values = [q.close for r in records if (q := r.market.get(VIX)) and q.close is not None]
     if vix_values:

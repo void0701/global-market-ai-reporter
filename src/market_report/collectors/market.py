@@ -192,10 +192,10 @@ def fetch_snapshot(
     snapshot.reference_date = ref.isoformat()
 
     for symbol in settings.all_symbols:
-        rows = histories.get(symbol)
-        if rows is None:
+        history = histories.get(symbol)
+        if history is None:
             continue
-        row = _latest_on_or_before(rows, ref)
+        row = _latest_on_or_before(history, ref)
         if row is None:
             snapshot.fetch_errors.append(f"{symbol}: {ref} 以前のデータなし")
             continue

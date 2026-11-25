@@ -52,8 +52,15 @@ def _entry_datetime(entry: object) -> datetime | None:
         tm = getattr(entry, key, None) or (entry.get(key) if isinstance(entry, dict) else None)
         if tm:
             try:
-                return datetime(*tm[:6], tzinfo=UTC)
+                # feedparser の struct_time を明示的に 6 要素へ落とす。
+                # `datetime(*tm[:6], tzinfo=UTC)` は tm の長さが不定だと
+                # tzinfo が二重指定になりうるため展開しない。
+                y, mo, d, h, mi, sec = (int(x) for x in tuple(tm)[:6])
             except (TypeError, ValueError):
+                continue
+            try:
+                return datetime(y, mo, d, h, mi, sec, tzinfo=UTC)
+            except ValueError:
                 continue
     return None
 

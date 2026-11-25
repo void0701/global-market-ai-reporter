@@ -10,7 +10,7 @@ from __future__ import annotations
 import html as html_mod
 import logging
 import re
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -38,6 +38,8 @@ from ..models import (
 from ..utils.text import fullwidth_len
 
 logger = logging.getLogger(__name__)
+
+JST = timezone(timedelta(hours=9))
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 
@@ -184,16 +186,39 @@ def build_env() -> Environment:
     return env
 
 
+def _display_timestamp(value: str | None) -> str:
+    """レポートの「生成」表示に使う文字列.
+
+    **レコードに記録された生成時刻を使う**（A-142）。レンダリング時刻にすると、
+    毎朝サイト全体を作り直す設計（A-141）のもとで過去のレポートに今日の日時が
+    表示されてしまう。欠落・不正な値のときだけ現在時刻に落とす。
+    """
+    stamp = None
+    if value:
+        try:
+            stamp = datetime.fromisoformat(value)
+        except ValueError:
+            logger.warning("generated_at を解釈できません: %s", value[:40])
+    if stamp is None:
+        stamp = datetime.now(UTC)
+    # 本システムは JST 基準（07:00 JST 実行）なので表示も JST に寄せる。
+    # fromisoformat の tzinfo は名前を持たないため、%Z では "UTC+09:00" になる。
+    # zoneinfo を使わないのは Lambda の tzdata 同梱に依存しないため。
+    return stamp.astimezone(JST).strftime("%Y-%m-%d %H:%M JST")
+
+
 class Renderer:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.env = build_env()
 
-    def _common(self, *, rel: str, title: str, model: str, dry_run: bool) -> dict[str, Any]:
+    def _common(
+        self, *, rel: str, title: str, model: str, dry_run: bool, generated_at: str | None = None
+    ) -> dict[str, Any]:
         return {
             "rel": rel,
             "page_title": title,
-            "generated_at": datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z"),
+            "generated_at": _display_timestamp(generated_at),
             "model": model,
             "dry_run": dry_run,
             "settings": self.settings,
@@ -206,6 +231,7 @@ class Renderer:
             title=f"{record.date} 米国市場 AI 解析レポート",
             model=record.model,
             dry_run=record.dry_run,
+            generated_at=record.generated_at,
         )
         ctx.update(record=record, a=record.analysis)
         return self.env.get_template("report.html.j2").render(**ctx)
@@ -217,6 +243,7 @@ class Renderer:
             title=f"{record.period_label} {kind}レポート",
             model=record.model,
             dry_run=record.dry_run,
+            generated_at=record.generated_at,
         )
         ctx.update(record=record, a=record.analysis, s=record.stats)
         return self.env.get_template("period.html.j2").render(**ctx)

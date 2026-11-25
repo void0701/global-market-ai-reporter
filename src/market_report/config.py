@@ -1,8 +1,12 @@
 """設定の読み込み.
 
-優先順は **CLI オプション > 環境変数 > config/*.toml**（docs/04 §6）。
+優先順は **CLI オプション > 環境変数 > パッケージ内の TOML**（docs/04 §6）。
 Phase 2 で Terraform が Lambda 環境変数 ``BEDROCK_MODEL_ID`` を注入するため、
 この順序を Phase 1 の時点で実装しておく。
+
+TOML は ``market_report/resources/`` に同梱し :mod:`importlib.resources` で
+解決する。リポジトリのレイアウトからの相対パスで解決すると、Lambda の
+展開先（``/var/task/market_report/``）で経路が崩れるため（docs/13 §8 R-1 / A-149）。
 """
 
 from __future__ import annotations
@@ -10,13 +14,39 @@ from __future__ import annotations
 import os
 import tomllib
 from dataclasses import dataclass, field
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
+RESOURCE_DIR_NAME = "resources"
 
-def _project_root() -> Path:
-    # src/market_report/config.py -> リポジトリルート
-    return Path(__file__).resolve().parents[2]
+
+def in_lambda() -> bool:
+    """AWS Lambda 上で動いているか."""
+    return bool(os.environ.get("AWS_LAMBDA_FUNCTION_NAME"))
+
+
+def _packaged_config_dir() -> Path:
+    """同梱 TOML の所在.
+
+    ``resources`` 自体はパッケージ（``__init__.py`` あり）にしないため、
+    ``market_report`` を起点にサブディレクトリを辿る。
+    """
+    return Path(str(resources.files("market_report"))) / RESOURCE_DIR_NAME
+
+
+def _writable_base() -> Path:
+    """相対 ``output_dir`` の基点.
+
+    Lambda のファイルシステムは ``/tmp`` 以外が読み取り専用なので分岐する。
+    """
+    if in_lambda():
+        return Path("/tmp")  # noqa: S108 - Lambda で唯一書き込める場所
+    root = Path(__file__).resolve()
+    for parent in root.parents:
+        if (parent / "pyproject.toml").exists():
+            return parent
+    return Path.cwd()
 
 
 @dataclass(frozen=True)
@@ -38,7 +68,8 @@ class SymbolConfig:
 
 @dataclass
 class Settings:
-    # Bedrock
+    # LLM
+    provider: str
     model_id: str
     region: str
     max_tokens: int
@@ -66,7 +97,6 @@ class Settings:
     symbols: dict[str, SymbolConfig]
 
     feeds: list[FeedConfig] = field(default_factory=list)
-    project_root: Path = field(default_factory=_project_root)
 
     # ---- 派生 ----
 
@@ -106,13 +136,13 @@ def _env(key: str) -> str | None:
 def load_settings(
     config_dir: Path | None = None,
     *,
+    provider: str | None = None,
     model_id: str | None = None,
     region: str | None = None,
     output_dir: Path | str | None = None,
 ) -> Settings:
     """設定を読み込む。引数（CLI 由来）が最優先."""
-    root = _project_root()
-    cdir = Path(config_dir) if config_dir else root / "config"
+    cdir = Path(config_dir or _env("MARKET_REPORT_CONFIG_DIR") or _packaged_config_dir())
 
     s = _load_toml(cdir / "settings.toml")
     f = _load_toml(cdir / "feeds.toml")
@@ -123,7 +153,15 @@ def load_settings(
     output = s.get("output", {})
     market = s.get("market", {})
 
+    resolved_provider = (
+        provider or _env("MARKET_REPORT_PROVIDER") or bedrock.get("provider", "anthropic")
+    )
     resolved_model = model_id or _env("BEDROCK_MODEL_ID") or bedrock["model_id"]
+    # provider と model_id の接頭辞を整合させる（取り違えは 404 になり原因が分かりにくい）
+    if resolved_provider == "anthropic":
+        resolved_model = resolved_model.removeprefix("anthropic.")
+    elif not resolved_model.startswith("anthropic."):
+        resolved_model = f"anthropic.{resolved_model}"
     resolved_region = (
         region or _env("AWS_REGION") or _env("AWS_DEFAULT_REGION") or bedrock["region"]
     )
@@ -133,7 +171,7 @@ def load_settings(
         else Path(_env("MARKET_REPORT_OUTPUT_DIR") or output.get("dir", "./output"))
     )
     if not resolved_out.is_absolute():
-        resolved_out = (root / resolved_out).resolve()
+        resolved_out = (_writable_base() / resolved_out).resolve()
 
     symbols = {
         sym: SymbolConfig(symbol=sym, label=cfg.get("label", sym), group=cfg.get("group", ""))
@@ -154,6 +192,7 @@ def load_settings(
     ]
 
     return Settings(
+        provider=resolved_provider,
         model_id=resolved_model,
         region=resolved_region,
         max_tokens=int(bedrock.get("max_tokens", 24000)),
@@ -172,5 +211,4 @@ def load_settings(
         ai_symbols=ai_symbols,
         symbols=symbols,
         feeds=feeds,
-        project_root=root,
     )

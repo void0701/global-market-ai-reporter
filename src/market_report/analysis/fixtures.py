@@ -18,25 +18,50 @@ from ..models import (
     AiPeriodTheme,
     AiWatchItem,
     Article,
+    Confidence,
+    Direction,
+    FxImpact,
+    Horizon,
     KeyNumber,
+    Magnitude,
     MarketSnapshot,
+    NewsCategory,
+    Novelty,
     PeriodStats,
     PeriodType,
+    RegionFocus,
+    Scope,
+    Sector,
+    SurpriseDirection,
 )
 
 _DRY = "[DRY-RUN] "
 
-_HORIZONS = ("immediate", "short_term", "long_term")
-_DIRECTIONS = ("down", "up", "volatility")
-_CONFIDENCES = ("high", "medium", "low")
-_CATEGORIES = ("monetary_policy", "economic_data", "corporate_earnings", "geopolitics", "other")
-_SECTORS = ("information_technology", "financials", "energy", "health_care", "industrials")
-_SURPRISES = ("above", "below", "inline", "no_consensus")
-_NOVELTY = ("new", "continuing", "priced_in")
-_MAGNITUDE = ("large", "medium", "small")
-_REGIONS = ("us", "global", "china", "europe", "japan")
-_SCOPES = ("us_specific", "global")
-_FX = ("yen_weaker", "yen_stronger", "neutral")
+# Literal を明示する。綴り間違いがその場で型エラーになり、スキーマと食い違った
+# ドライラン出力が混入しない（docs/13 §8 R-4）。
+_HORIZONS: tuple[Horizon, ...] = ("immediate", "short_term", "long_term")
+_DIRECTIONS: tuple[Direction, ...] = ("down", "up", "volatility")
+_CONFIDENCES: tuple[Confidence, ...] = ("high", "medium", "low")
+_CATEGORIES: tuple[NewsCategory, ...] = (
+    "monetary_policy",
+    "economic_data",
+    "corporate_earnings",
+    "geopolitics",
+    "other",
+)
+_SECTORS: tuple[Sector, ...] = (
+    "information_technology",
+    "financials",
+    "energy",
+    "health_care",
+    "industrials",
+)
+_SURPRISES: tuple[SurpriseDirection, ...] = ("above", "below", "inline", "no_consensus")
+_NOVELTY: tuple[Novelty, ...] = ("new", "continuing", "priced_in")
+_MAGNITUDE: tuple[Magnitude, ...] = ("large", "medium", "small")
+_REGIONS: tuple[RegionFocus, ...] = ("us", "global", "china", "europe", "japan")
+_SCOPES: tuple[Scope, ...] = ("us_specific", "global")
+_FX: tuple[FxImpact, ...] = ("yen_weaker", "yen_stronger", "neutral")
 
 
 def _sentiment_from_market(snapshot: MarketSnapshot, symbol: str) -> int:

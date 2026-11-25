@@ -3,17 +3,19 @@ name = "market-report"
 version = "0.1.0"
 description = "米国・世界ニュースAI解析＆自動レポート配信パイプライン"
 requires-python = ">=3.12"
+# Lambda には extra なしの anthropic を入れる（boto3/botocore はランタイム同梱 / A-150）。
+# bedrock extra はローカルで `--provider bedrock` を試すときのみ必要。
 dependencies = [
-    "anthropic[bedrock]>=2.0",
+    "anthropic>=2.0",
     "feedparser>=6.0",
     "jinja2>=3.1",
     "pydantic>=2.0",
-    "pydantic-settings>=2.0",
 ]
 
 [project.optional-dependencies]
 # Phase 1 のみ。市況取得は既定で stdlib の HttpChartProvider を使うため通常は不要
 market = ["yfinance>=0.2"]
+bedrock = ["anthropic[bedrock]>=2.0"]
 dev = ["pytest>=8.0", "ruff>=0.6", "mypy>=1.11"]
 
 [project.scripts]
@@ -27,7 +29,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-market_report = ["rendering/templates/*.j2"]
+market_report = ["rendering/templates/*.j2", "resources/*.toml"]
 
 [tool.ruff]
 line-length = 100

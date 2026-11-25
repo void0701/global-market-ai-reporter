@@ -13,9 +13,12 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from .collectors.rss import USER_AGENT as RSS_USER_AGENT
 from .config import Settings
+
+CRED_HINT = "provider=anthropic なら ANTHROPIC_API_KEY、bedrock なら AWS_BEARER_TOKEN_BEDROCK"
 
 OK = "✅"
 NG = "❌"
@@ -23,10 +26,15 @@ WARN = "⚠️ "
 SKIP = "⏭ "
 
 CANDIDATE_MODELS = [
-    ("anthropic.claude-opus-5", "推奨（本番で使う）"),
-    ("anthropic.claude-sonnet-5", "暫定の代替（全顧客オープン）"),
-    ("anthropic.claude-haiku-4-5", "最安（全顧客オープン）"),
+    ("claude-opus-5", "推奨（本番で使う）"),
+    ("claude-opus-5-5", "より新しい世代（使えれば候補）"),
+    ("claude-sonnet-5", "代替（安価）"),
+    ("claude-haiku-4-5", "最安"),
 ]
+
+
+def _for_provider(model: str, provider: str) -> str:
+    return f"anthropic.{model}" if provider == "bedrock" else model
 
 
 @dataclass
@@ -80,6 +88,34 @@ def check_local(settings: Settings) -> list[Check]:
 
 def check_credentials(settings: Settings) -> list[Check]:
     checks: list[Check] = []
+    checks.append(
+        Check(
+            "プロバイダ",
+            OK,
+            "Claude API を直接呼び出し" if settings.provider == "anthropic" else "Amazon Bedrock",
+            f"provider = {settings.provider}"
+            "（settings.toml / MARKET_REPORT_PROVIDER / --provider で変更）",
+        )
+    )
+    if settings.provider == "anthropic":
+        has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
+        # ant CLI でログイン済みなら ~/.config/anthropic/ にプロファイルがあり、
+        # SDK はそれを自動で読む（API キーは不要）
+        cli_profile = Path.home() / ".config" / "anthropic"
+        has_cli = cli_profile.exists() and any(cli_profile.iterdir())
+        if has_key:
+            detail, hint = "ANTHROPIC_API_KEY", ""
+        elif has_cli:
+            detail, hint = f"ant CLI のプロファイル（{cli_profile}）", "API キーより安全な経路です"
+        else:
+            detail, hint = (
+                "見つかりません",
+                "ant auth login（推奨）または export ANTHROPIC_API_KEY='sk-ant-...' "
+                "（docs/07 §A-0-C）",
+            )
+        checks.append(Check("認証情報", OK if (has_key or has_cli) else NG, detail, hint))
+        return checks
+
     sources = [
         v
         for v in ("AWS_PROFILE", "AWS_ACCESS_KEY_ID", "AWS_BEARER_TOKEN_BEDROCK")
@@ -93,9 +129,21 @@ def check_credentials(settings: Settings) -> list[Check]:
             "AWS 認証情報の候補",
             OK if found else WARN,
             ", ".join(found) if found else "環境変数も ~/.aws も見つかりません",
-            "" if found else "aws configure sso を実行するか AWS_PROFILE を設定してください",
+            ""
+            if found
+            else "最短は Bedrock API キー: export AWS_BEARER_TOKEN_BEDROCK=...（docs/07 §A-0-F）",
         )
     )
+    if os.environ.get("AWS_BEARER_TOKEN_BEDROCK"):
+        # AWS_BEARER_TOKEN_BEDROCK は通常の AWS クレデンシャルチェーンより優先される
+        checks.append(
+            Check(
+                "認証方式",
+                OK,
+                "Bedrock API キー（ベアラートークン）",
+                "通常の AWS 認証情報より優先されます。Bedrock 以外には使えません",
+            )
+        )
     env_region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
     checks.append(
         Check(
@@ -111,29 +159,35 @@ def check_credentials(settings: Settings) -> list[Check]:
 
 def check_bedrock(settings: Settings, *, quick: bool = False) -> list[Check]:
     """各候補モデルに最小リクエストを投げてアクセス可否を判定する."""
+    label = "Claude API" if settings.provider == "anthropic" else "Bedrock"
     if quick:
-        return [Check("Bedrock 接続", SKIP, "--quick のため省略")]
-
-    try:
-        from anthropic import AnthropicBedrockMantle
-    except ImportError:
-        return [Check("Bedrock 接続", NG, "anthropic SDK が無い")]
+        return [Check(f"{label} 接続", SKIP, "--quick のため省略")]
 
     checks: list[Check] = []
     try:
-        client = AnthropicBedrockMantle(aws_region=settings.region)
+        if settings.provider == "bedrock":
+            from anthropic import AnthropicBedrockMantle
+
+            # provider により実型が変わるため Any で受ける（client.py と同じ扱い）
+            client: Any = AnthropicBedrockMantle(aws_region=settings.region)
+        else:
+            from anthropic import Anthropic
+
+            # API キーが無くても ant CLI のプロファイルで動くため、ここでは
+            # 事前チェックせず実際に呼んで判定する
+            client = Anthropic()
     except Exception as exc:  # noqa: BLE001 - 認証の失敗形は環境により様々
         return [
             Check(
-                "Bedrock クライアント生成",
+                f"{label} クライアント生成",
                 NG,
                 f"{type(exc).__name__}: {str(exc)[:160]}",
-                "aws configure sso / AWS_PROFILE を確認してください",
             )
         ]
 
     accessible: list[str] = []
-    for model, note in CANDIDATE_MODELS:
+    for base, note in CANDIDATE_MODELS:
+        model = _for_provider(base, settings.provider)
         try:
             client.messages.create(
                 model=model, max_tokens=4, messages=[{"role": "user", "content": "hi"}]
@@ -144,14 +198,7 @@ def check_bedrock(settings: Settings, *, quick: bool = False) -> list[Check]:
             text = str(exc)
             lowered = text.lower()
             if "credential" in lowered:
-                checks.append(
-                    Check(
-                        f"モデル {model}",
-                        NG,
-                        "認証情報を解決できません",
-                        "aws configure sso を実行し AWS_PROFILE を設定してください",
-                    )
-                )
+                checks.append(Check(f"モデル {model}", NG, "認証情報を解決できません", CRED_HINT))
                 break
             if "accessdenied" in lowered.replace(" ", "") or "not authorized" in lowered:
                 checks.append(
@@ -160,6 +207,18 @@ def check_bedrock(settings: Settings, *, quick: bool = False) -> list[Check]:
                         NG,
                         f"アクセス不可（{note}）",
                         f"AWS コンソール > Bedrock（{settings.region}）> モデルアクセス で有効化",
+                    )
+                )
+            elif "not_found" in lowered or "does not exist" in lowered:
+                # 認証は通っているがモデルが見えない。モデルアクセス未有効化が最有力
+                checks.append(
+                    Check(
+                        f"モデル {model}",
+                        NG,
+                        f"このリージョンで見つかりません（{note}）",
+                        f"認証は通っています。**{settings.region} で**モデルアクセスを"
+                        "有効化してください。状態確認: "
+                        "python scripts/probe_bedrock.py（docs/07 §A-0-P）",
                     )
                 )
             else:
@@ -237,8 +296,11 @@ def check_sources(settings: Settings, *, quick: bool = False) -> list[Check]:
 def run(settings: Settings, *, quick: bool = False) -> int:
     groups = [
         ("ローカル環境", check_local(settings)),
-        ("AWS 認証", check_credentials(settings)),
-        ("Bedrock", check_bedrock(settings, quick=quick)),
+        ("認証", check_credentials(settings)),
+        (
+            "Claude API" if settings.provider == "anthropic" else "Bedrock",
+            check_bedrock(settings, quick=quick),
+        ),
         ("外部データソース", check_sources(settings, quick=quick)),
     ]
     print("\n=== セットアップ検証 ===")
