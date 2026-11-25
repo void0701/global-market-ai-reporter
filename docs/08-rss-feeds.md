@@ -59,7 +59,7 @@ https://feeds.a.dj.com/rss/RSSMarketsMain.xml
 
 ## 3. 採用リスト（11 本）
 
-`config/feeds.toml` の初版案。要約（`description`）を持ち、鮮度が確認できたものに絞りました。
+`resources/feeds.toml`（当初 `config/feeds.toml`）の初版案。要約（`description`）を持ち、鮮度が確認できたものに絞りました。
 
 | # | 名称 | URL | weight | 役割 |
 |---|---|---|---|---|
@@ -168,7 +168,7 @@ User-Agent を変えても 403。プログラムからのアクセスがブロ�
 
 ---
 
-## 6. `config/feeds.toml` 初版案
+## 6. `resources/feeds.toml` 初版案
 
 ```toml
 # 検証日: 2026-11-22（日曜）。平日に再検証が必要

@@ -11,7 +11,7 @@
 | A-1 | Bedrock は **`bedrock-mantle` エンドポイント**を使う（`bedrock-runtime` の `InvokeModel` は使わない） | Messages API 互換で構造化出力が素直に使える。boto3 での JSON 手組みが不要。[02](02-bedrock-selection.md) |
 | A-2 | Python クライアントは **`AnthropicBedrockMantle`**（`anthropic[bedrock]`） | 同上。Lambda では実行ロールが自動で使われ認証コードが不要 |
 | A-3 | **モデルは `anthropic.claude-opus-5`** | 因果推論タスクであり出力品質が成果物の価値に直結する。Sonnet 5 との月額差は約 $4 で、この差で品質を落とす合理性が薄い |
-| A-4 | **リージョンは `ap-northeast-1`（東京）** | コンソール運用・CloudWatch ログ確認が日本時間の感覚と一致。全リソースを同一リージョンに揃える |
+| A-4 | **リージョンはプロジェクトのリージョン（現状 `ap-southeast-2`）** ※2026-11-24 変更 | 当初は東京を選定したが、**「Sign up for AWS (new)」ではリージョンを指定も変更もできない**（連絡先情報から自動決定）。1日1回のバッチでレイテンシは無関係、必要サービスは全て Free Tier に含まれるため、現リージョンのまま進める（[07 §A-0-N](07-prerequisites.md)） |
 | A-5 | **IaC は Terraform** | CDK の bundling の Docker 依存が、本件の重い依存（pandas 問題）と衝突する。zip の作り方を自分で制御できる方がデバッグが容易 |
 | A-6 | **秘密情報は Secrets Manager**（SSM Parameter Store ではない） | リソースポリシー・CMK 連携・CloudTrail 統合による権限分離と監査性。月 $0.40 はその対価 |
 | A-7 | **グローバルエンドポイント**を使う（リージョナルの 10% プレミアムを払わない） | 公開ニュースの解析でデータ所在地要件がない |
@@ -41,7 +41,7 @@
 
 | # | 判断 | 理由 |
 |---|---|---|
-| A-17 | `MarketDataProvider` を**抽象インターフェース**にする | yfinance の pandas 依存が Lambda パッケージを膨らませる。Phase 2 で軽量実装に差し替えるため |
+| A-17 | `MarketDataProvider` を**抽象インターフェース**にする ※**Phase 1 で完了** | yfinance の pandas 依存が Lambda パッケージを膨らませる想定だったが、**Phase 1 で `HttpChartProvider`（標準ライブラリのみ）を既定として実装済み**。Phase 2 の差し替え作業は不要（zip 実測 6.3MB） |
 | A-18 | `Publisher` を**抽象プロトコル**にする | Phase 1（ローカル）→ Phase 2（S3）の差し替えを `pipeline.py` 無変更で行う |
 | A-19 | 重複排除は**標準ライブラリのみ**で実装 | `rapidfuzz` は C 拡張で Lambda 配布が面倒。100〜200件規模なら `difflib` で十分 |
 | A-20 | 設定は **TOML + `tomllib`**（PyYAML を使わない） | 標準ライブラリで足りる。依存を増やさない |
@@ -85,7 +85,7 @@
 | A-43 | **prod は自動デプロイしない**（手動トリガー + 必須レビュー） | 1 日 1 回のバッチでデプロイ頻度を上げる必要がない。安全側に倒す |
 | A-44 | **`pull_request_target` は使わない** | フォークの変更に権限付きで実行されるため、OIDC と組み合わせると危険 |
 | A-45 | スモークテストは **`dry_run: true`** で行う | デプロイ検証のたびに Bedrock を呼んで課金されるのを避ける。配線確認が目的 |
-| A-46 | Lambda zip は **S3 経由**でデプロイ | 直接アップロードの 50MB 制限を構造的に回避。pandas を含めることになっても詰まらない |
+| A-46 | ~~Lambda zip は S3 経由でデプロイ~~ → **どちらでもよい** ※2026-11-24 改訂 | 50MB 制限の回避が目的だったが、**zip 実測 6.3MB** のため直接アップロードで十分。S3 経由にしても害はない |
 | A-47 | Lambda アーキテクチャは **x86_64**（arm64 にしない） | arm64 は単価が約 20% 安いが Lambda コストは無料枠内で $0。**削減額ゼロの最適化のためにクロスアーキテクチャのビルド複雑性を抱えない** |
 | A-48 | Lambda の**予約済み同時実行数を 2** に設定 | 暴走時のコスト上限 |
 | A-49 | `main` ブランチを保護（PR 必須 / 必須ステータスチェック / force push 禁止） | — |
@@ -188,6 +188,97 @@
 | A-111 | Markdown → HTML は**自前の最小実装** | `markdown` パッケージを増やさない。見出し・箇条書き・強調・リンクのみで足りる |
 | A-112 | 認証情報エラーは**専用の例外と案内文**にする | 生のスタックトレースではなく、`aws configure sso` と `--dry-run` を案内する |
 | A-113 | 「最大上昇日」ではなく**「期間中で最も良かった日」** | 下落週では最良日も負値になり、「上昇」というラベルが誤解を招く |
+
+### A-15. AWS 新サインアップ体験への対応（2026-11-24）
+
+| # | 判断 | 理由 |
+|---|---|---|
+| A-114 | **プロジェクトのリージョンをそのまま使う**（アカウントのアップグレードはしない） | リージョン変更には「高度な機能の有効化」が必要。本システムに必要なサービスは**すべて新体験の Free Tier に含まれる**ため、アップグレードの理由がない |
+| A-115 | **IAM Identity Center の自前構築は行わない** | 新体験では AWS が自動構成する。自前でのセットアップは不可かつ不要 |
+| A-116 | **MFA は AWS Builder ID に設定する** | 新体験にはルートユーザーが存在しない。Builder ID がプロジェクトアカウントを所有する |
+| A-117 | **支出上限（spend limit）を使う**（Budgets アラートに加えて） | 新体験ではハードな上限を設定できる。アラートより強い保護になる |
+| A-118 | ローカルからの認証は **Bedrock API キー**（Phase 1）/ **IAM ユーザーのプログラマティックアクセス**（Phase 2 以降） | 新体験では IAM ユーザーはコンソールログイン不可・プログラマティック専用 |
+
+### A-16. LLM プロバイダの変更（2026-11-24）
+
+| # | 判断 | 理由 |
+|---|---|---|
+| A-119 | **既定のプロバイダを Claude API 直接（`provider = "anthropic"`）に変更** | Bedrock で Claude を使うには AWS Marketplace 経由の利用契約が必要だが、新サインアップ体験では **「高度な機能の有効化」（取り消し不可・支出上限を失う）** をしない限り Marketplace を使えないことが実機で判明（[07 §A-0-P](07-prerequisites.md)） |
+| A-120 | **`provider` 設定で Bedrock と切り替え可能にする** | 将来 AWS 側の制約が変わった場合に戻せるようにする。どちらも Messages API なのでクライアント生成以外は共通 |
+| A-121 | **`provider` と `model_id` の接頭辞を自動で整合させる** | `anthropic.` の付け忘れ/付けすぎは 404 になり原因が分かりにくい。設定読み込み時に正規化する |
+| A-122 | **コスト試算は変更不要** | [03](03-cost-and-tokens.md) はもともとファーストパーティ単価で計算していたため、**試算値がそのまま正確値になる** |
+| A-123 | Phase 2 では **Secrets Manager に `ANTHROPIC_API_KEY` を置く** | Lambda は IAM ではなく Secrets Manager 経由で認証。S3 / CloudFront / EventBridge / Terraform / OIDC の設計は変更なし |
+
+### A-17. Phase 2 レビューでの改訂（2026-11-24）
+
+| # | 判断 | 理由 |
+|---|---|---|
+| A-124 | **本格的な HCL を書く前に「権限の検証スパイク」を実施する**（[06 §2-0](06-cicd-and-environments.md)） | 新サインアップ体験の AWS 管理 SCP で**既に 2 回作業が止まっている**（Marketplace / リージョン）。OIDC プロバイダ・IAM ロール・KMS キー・バケットポリシーの作成可否は未検証。500 行書いてから弾かれるのを避ける |
+| A-125 | **Secrets Manager を Phase 3 → Phase 2 に前倒し** | `ANTHROPIC_API_KEY` が Phase 2 の時点で必要になるため |
+| A-126 | **dev にはシークレットを一切置かない**（Anthropic キーも置かない） | dev の目的は S3/OAC/IAM/Scheduler の**配線検証**で、スモークテストは `dry_run` のため LLM を呼ばない。実解析の検証はローカルで足りる（Phase 1 で実施済み）。A-28 の「dev はシークレットを持たない」性質を維持できる |
+| A-127 | **Lambda はコールドスタート時に Secrets Manager から API キーを取得し `os.environ` に設定する** | Lambda の環境変数に直接入れるとコンソールで誰でも見える |
+| A-128 | **Lambda のタイムアウトを 600 秒にする**（300 秒から変更） | LLM 実測 153 秒 + 取得 20 秒 = 175 秒。300 秒では余裕が 125 秒しかない。延長しても課金は実行時間ぶんのみ |
+| A-129 | **モデル差し替え時の IAM 連動（旧 A-9）は不要になった** | Claude API 直接では IAM とモデル ID が無関係。旧 §6-2 の落とし穴が構造的に消滅 |
+| A-130 | **コスト監視を 2 系統に分ける** | 請求が Anthropic（$7.72＝総額の73%）と AWS（$2.80）に分かれた。AWS Budgets だけでは LLM 分を監視できないため、**Anthropic Console 側にも使用量上限を設定する** |
+
+### A-18. 配信層の変更（2026-11-25 / スパイク結果）
+
+| # | 判断 | 理由 |
+|---|---|---|
+| A-131 | **CloudFront を直接使わず、AWS Amplify Hosting で配信する** | 新規アカウントでは `CreateDistribution` が 403（アカウント検証が必要）。AWS サポートへの問い合わせを避けるため。**Amplify は内部で CloudFront を使うが AWS 管理のため検証不要**。実機で HTTPS 配信・サブディレクトリ・HTTP→HTTPS リダイレクトを確認済み |
+| A-132 | **S3 は `raw/` `data/` の保管用として維持**（配信からは外す） | スパイクで S3・バケットポリシー・Block Public Access はすべて検証済み。期間レポートの入力として必須 |
+| A-133 | **S3 静的ウェブサイトホスティングは採用しない** | **HTTPS が使えない**（ウェブサイトエンドポイントは HTTP のみ）。X に `http://` を貼ることになり、Block Public Access の解除もセキュリティ設計と衝突する |
+| A-134 | GitHub Pages / Cloudflare Pages ではなく Amplify を選ぶ | AWS 内で完結し、請求先・IAM・Terraform の管理対象が増えない |
+| A-135 | **Terraform は `credential_process` プロファイル経由で `aws login` のセッションを使う** | `~/.aws/config` の `login_session` は AWS CLI 独自のキーで Terraform は読めない（実機で `No valid credential sources found` を確認）。AWS CLI に標準形式へ変換させる |
+| A-136 | **スパイクで 16/17 が成功。Phase 2 の設計は配信層以外そのまま採用** | OIDC プロバイダ・IAM ロール・KMS・バケットポリシーはすべて SCP に拒否されなかった |
+
+### Phase 2 着手前レビューと確定（2026-11-25 / [13 §8](13-phase2-plan.md)）
+
+| # | 決定 | 根拠 |
+|---|---|---|
+| A-137 | **日次は火〜土に実行する**（旧 B-1 を確定） | 日・月の実行は米国の取引セッションを 1 つも含まず空振り。週末ニュースは月曜の週次が拾う（[09 §2](09-periodic-reports.md)） |
+| A-138 | **Lambda ランタイムは Python 3.12** | ローカルと一致させ、検証環境と本番の差分を減らす |
+| A-139 | **Lambda zip は直接アップロード**（A-46 を確定） | 実測 6.3MB で上限 50MB に余裕。S3 経由を選んだ理由（pandas）が消滅 |
+| A-140 | **dev に `ANTHROPIC_API_KEY` を置かない**（A-126 を確定） | スモークテストは `dry_run` で LLM を呼ばない。「dev はシークレットを持たない」性質を維持 |
+| A-141 | **毎朝、保存済みデータから全レポートを再レンダリングして Amplify に送る** | Amplify の手動デプロイはサイト全体の置き換えであり、全 HTML が毎回必要（R-3）。`rebuild_index` が既に全日次レコードを読むため追加の S3 アクセスは不要。テンプレート改善が過去分にも反映される |
+| A-142 | `generated_at` は**レコードの値を使う**（レンダリング時刻をやめる） | A-141 により、現状のままでは過去のレポートに今日の日時が表示される（[html.py:196](../src/market_report/rendering/html.py)） |
+| A-143 | **通知先メールアドレスを Terraform / リポジトリに置かない。** Terraform は SNS トピックのみ作成し、**購読登録は ken さんが 1 回だけ手動で行う**（旧 B-2 への回答） | **リポジトリが public**。かつ SNS の email 購読は受信者の確認クリックが必須で `PendingConfirmation` のまま残るため、HCL に書いても手作業は減らず、露出だけが増える。A-33（シークレットを Terraform で管理しない）と同じ理屈 |
+| A-144 | **AWS Budgets も同じ SNS トピックに通知させる** | 購読登録を 1 回で済ませる。アドレスを Budgets の HCL に書く必要もなくなる |
+| A-145 | **`.gitignore` に `*.tfvars` / `*.auto.tfvars` を追加** | 環境固有の値や個人情報を書く場所であり、public リポジトリに載せられない。例示用は `infra/envs/*/example.tfvars` のみ追跡 |
+| A-146 | **AWS プロバイダを `~> 6.0` に固定**（`~> 5.0` から変更） | 5.100.0 は `aws_amplify_app` でレート制限のリトライを無表示で続け **14 分ハング**。6.74.0 は原因を即座に表示する（R-7） |
+| A-147 | **Lambda の IAM に `s3:GetObject` / `s3:ListBucket` / `amplify:*` / `sns:Publish` を追加** | `run_daily` は末尾で `rebuild_index` を呼び過去の全日次レコードを読む（`pipeline.py:160`）。読み取り権限なしでは 2 日目から `AccessDenied`（R-2） |
+| A-148 | **失敗通知は 2 層にする。** ハンドラ内 `try`/`except` → `sns:Publish` と、CloudWatch アラーム（`Errors`）→ SNS | 前者だけではタイムアウト・OOM・import 失敗が**無通知**になる（R-6） |
+| A-149 | **設定 TOML をパッケージ内に移し `importlib.resources` で解決する** | 現状の `_project_root()` は Lambda で `/var` を返し `load_settings()` が確実に失敗する（R-1・実機で再現） |
+| A-150 | **Lambda 用の依存は `anthropic`（extra なし）。`pydantic-settings` を削除** | `[bedrock]` が引き込む botocore/boto3 はランタイム同梱。`pydantic-settings` はコード内で未使用（R-8） |
+
+### Lambda 実装時の決定（2026-11-25）
+
+| # | 決定 | 根拠 |
+|---|---|---|
+| A-151 | **ハンドラ指定は `market_report.lambda_handler.handler`** | zip 直下に別ファイルを置かず、パッケージ内に収める。ローカルからも同じ経路で import できる |
+| A-152 | **失敗時は SNS に通知した上で例外を再送出する** | 再送出しないと Lambda の `Errors` メトリクスが立たず、A-148 の 2 層目（CloudWatch アラーム）が働かない |
+| A-153 | **`S3Publisher` に `get_many()` を足し、プロトコルは広げない** | `rebuild_index` の並列化（R-5）のためだが、`LocalPublisher` に実装を強いる理由はない。`store` 側でダックタイピングして拾う |
+| A-154 | **`build_site()` が 0 ページを返したら配信しない** | Amplify は全置き換えなので、空の zip を送るとサイトが消える |
+| A-155 | **`AMPLIFY_APP_ID` 未設定なら配信をスキップして正常終了する** | dev に Amplify を置かない構成でも日次の生成自体は検証したい。配信の有無は環境変数で決まる |
+| A-156 | **`ANTHROPIC_API_KEY` が既に環境変数にあれば Secrets Manager を呼ばない** | ローカル実行とテストで同じハンドラを使えるようにする。Lambda では環境変数に入れないので実害はない |
+| A-157 | **`pip-audit` は環境ではなく `requirements-lambda.txt` を監査する** | editable install の `market-report` は PyPI に無く、環境監査では `--strict` が常に失敗する（実測）。本番に載るものだけを見たいので目的にも合う |
+| A-158 | **CI は `mypy src tests` で**テストも型検査する | ドライラン用フィクスチャがスキーマからずれるのを型で止める（R-4 で `fixtures.py` に 11 件出ていた） |
+
+### Terraform 実装時の決定（2026-11-25）
+
+| # | 決定 | 根拠 |
+|---|---|---|
+| A-159 | **checkov の除外は `.checkov.yaml` に理由付きで書く。** 指摘を受けて **X-Ray トレーシング**（`CKV_AWS_50`）と **Lambda の DLQ**（`CKV_AWS_116`）は実際に追加した | ワークフローに `skip_check` を並べると理由が失われる。21 件の指摘を機械的に黙らせるのではなく、直す価値のあるものは直した。結果 **135 passed / 0 failed** |
+| A-160 | **`run_daily` / `run_period` に `publish_index` を足し、Lambda では `False` にする。** index の更新と Amplify 配信は `_publish_site` が `build_site()` を 1 回呼んで両方こなす | `build_site()` は過去の全レコードを読む。素朴に書くと `rebuild_index` と配信で **同じ全件読み込みが 2 回**走る |
+| A-161 | **Lambda の DLQ は SNS トピックにする**（SQS を増やさない） | Scheduler は非同期呼び出しなので、リトライを使い切った呼び出しはハンドラの `try`/`except` に到達しない。既存の通知トピックを再利用すれば購読登録も 1 回で済む |
+| A-162 | **X-Ray を有効にする**（`tracing_config.mode = "Active"`） | 1 回 150 秒の処理の内訳（RSS / 市況 / LLM / S3 / Amplify）が見える。月 30 回では無料枠内で $0 |
+| A-163 | **CI の `terraform plan` は `-lock=false`** | `gha-plan` ロールは state を読むだけで書けない。S3 ネイティブロックはロックファイルの書き込みを要求するため、読み取り専用ロールでは取得できない |
+| A-164 | **prod の Terraform 変数は GitHub の Repository variables で渡す**（`TF_VAR_*`） | `terraform.tfvars` は `.gitignore` 済み（A-145）なので CI から読めない。KMS キー ARN とプリンシパル ARN は機密ではないため Secrets ではなく variables に置く |
+| A-165 | **デプロイロールの `assume_role_policy` に `environment:prod` を使う** | GitHub Environments の必須レビュアーを通らないと `sub` が発行されない。承認ゲートを **IAM でも二重化**できる（ブランチ指定ではこの性質が得られない） |
+| A-166 | **state の書き込みは環境ごとのプレフィックスに限定する** | `gha-deploy-dev` が prod の state を壊せないようにする。IAM の Resource を `${bucket}/dev/*` に絞る |
+| A-167 | **CI のデプロイロールに `GetSecretValue` / `PutSecretValue` の明示的 Deny を付ける** | 容器は作れるが中身は読めない、という方針（A-33）を IAM でも裏打ちする。secrets 用 CMK を渡さないことと合わせて二重防御 |
+| A-168 | **`infra/spike/` は削除せず完了バナーを付けて残す** | 何を検証したかの記録として価値がある。再実行を防ぐため、CloudFront が 403 になることとプロバイダが旧版であることを冒頭に明記し、checkov の対象からも除外する |
+| A-169 | **Amplify に `custom_rule` を設定しない** | 存在しないパスは `301` を 1 回経て **404** で終わることを実機確認済み（R-10）。SPA 用フォールバックを入れると 404 が 200 になり、検証済みの挙動を壊す |
 
 ## B. 保留中の判断
 

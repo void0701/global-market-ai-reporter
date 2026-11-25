@@ -130,13 +130,343 @@ Terraform を環境別ディレクトリ構成にしてあるため（[06](06-ci
 
 > **アカウント作成には電話番号による本人確認があります。** 1 つの電話番号で複数の AWS アカウントを作れるため、既存アカウントと同じ番号で問題ありません。
 
-### A-1. ⚡ アカウント作成直後にやること（この順番で）
+### A-0-C. ⭐ Claude API キーの発行（現在の既定構成）
+
+**[確認済: Claude 公式ドキュメント / 2026-11-24]**
+
+本プロジェクトは `provider = "anthropic"`（Claude API 直接）を既定にしています
+（[05](05-decisions.md) A-119）。必要なのは **Claude Console のアカウントと認証情報だけ**で、
+AWS は Phase 2 まで不要です。
+
+#### 認証方法は 2 つあります
+
+| | `ant` CLI（**ローカル開発の推奨**） | API キー |
+|---|---|---|
+| 認証情報の所在 | `~/.config/anthropic/` のプロファイル | 環境変数 `ANTHROPIC_API_KEY` |
+| 長期キーがシェルに残るか | **残らない** | 残る（`.zshrc` に書くとさらに残る） |
+| Lambda（Phase 2）で使えるか | ❌ | ✅ **必要** |
+| 用途 | Phase 1 のローカル実行 | Phase 2 以降 + CI |
+
+**Phase 1 は `ant` CLI、Phase 2 で API キー**という使い分けが安全です。
+API キー 1 本で両方まかなっても問題ありません。
+
+#### 手順 1: Claude Console のアカウントを作る
+
+1. https://platform.claude.com/ を開く
+2. サインアップ、または既にアカウントがあればサインイン
+
+> **Claude（チャット）の契約とは別会計です。** Claude Pro / Max に加入していても
+> API の利用料は別建てで、逆に API を使うのに Pro 契約は不要です。
+
+#### 手順 2-A: `ant` CLI で認証する（推奨）
+
+```bash
+brew install anthropics/tap/ant
+```
+
+```bash
+ant auth login
+```
+
+ブラウザが開いて認証されます。完了後、**SDK は自動的にこの認証情報を読みます**。
+`ANTHROPIC_API_KEY` の設定は不要です。
+
+> 本プロジェクトのコードは `Anthropic()` をゼロ引数で生成しているため、CLI ログイン済み
+> ならそのまま動きます。ただし現在の `doctor` は `ANTHROPIC_API_KEY` の有無を見るため、
+> CLI 認証の場合は「未設定」と表示されます（接続チェック自体は成功します）。
+
+#### 手順 2-B: API キーを発行する
+
+1. https://platform.claude.com/settings/keys を開く
+2. **Create Key** でキーを作成
+3. **表示されたキーをその場でコピー**（再表示できません）
+4. 環境変数に設定
+
+```bash
+export ANTHROPIC_API_KEY='sk-ant-...'
+```
+
+#### 手順 3: 動作確認
+
+```bash
+.venv/bin/market-report doctor
+```
+
+#### 手順 4: 支払い方法と使用量の上限
+
+**[要確認]** API の利用にはクレジットの購入または支払い方法の登録が必要です。
+Console の Billing から設定してください。無料枠の有無や最低購入額はアカウントの
+状態により異なるため、実際の画面で確認してください。
+
+本システムの想定消費は **月 $7.4 程度**です（[03](03-cost-and-tokens.md)）。
+
+**[要確認]** Console には使用量・支出の上限を設定する機能があります。
+AWS の spend limit を使わない構成になったため、**コスト防御としてここで上限を設定する**
+ことを推奨します。月 $20 程度（想定の約2.7倍）が妥当です。
+
+#### キーの取り扱い
+
+| 項目 | 内容 |
+|---|---|
+| 表示 | **作成時の一度だけ**。紛失したら再発行 |
+| リポジトリ | **コミットしない**（`.gitignore` に `.env` を登録済み） |
+| 漏洩時 | Console からただちに失効させ、新しいキーを発行 |
+| Phase 2 | **Secrets Manager に格納**し、Terraform では値を管理しない（[05](05-decisions.md) A-33 / A-123） |
+
+> ⚠️ **チャットやドキュメントにキーを貼らないでください。** 確認は `doctor` の出力で足ります。
+
+---
+
+### A-0-N. 🆕「Sign up for AWS (new)」= プロジェクト方式の場合
+
+> **現在の既定構成（Claude API 直接）では、以下の AWS に関する節は Phase 2 まで不要です。**
+
+
+**[確認済: AWS 公式ドキュメント / 2026-11-24 調査]**
+
+AWS には現在 2 つのサインアップ方式があり、**どちらで作ったかで前提が大きく変わります**。
+コンソールに「**プロジェクト**」が出てくる場合は新方式です。
+
+| | Sign up for AWS (new)（プロジェクト方式） | Sign up for AWS (advanced)（従来方式） |
+|---|---|---|
+| リソースの単位 | **プロジェクト**（= プロジェクトアカウント） | AWS アカウント |
+| **リージョンの指定** | **不可。連絡先情報から自動決定** | 可 |
+| **リージョンの変更** | **不可**（「Enable or disable AWS Regions」は Not applicable） | 可 |
+| ルートユーザー | **存在しない。AWS Builder ID が所有** | あり |
+| IAM Identity Center | **自動構成**（自前でのセットアップは不可／不要） | 自分で構成 |
+| AWS Organizations | 自動 opt-in（自前利用は不可） | 自分で構成 |
+| IAM ユーザー/ロール | **プログラマティックアクセス専用**（コンソールログイン不可） | 制限なし |
+| 利用できるサービス | **限定**（下記） | 全サービス |
+| **支出上限（spend limit）** | **あり**（ハードな上限を設定できる） | なし（Budgets のアラートのみ） |
+| 従来方式への移行 | 「アカウントのアップグレード」/「高度な機能の有効化」で可能 | — |
+
+> **リージョンを変えたい場合は「高度な機能を有効化（Activate advanced AWS features）」が必要**です。
+> ただし本プロジェクトは **現在のリージョンのままで問題なく動作します**（下記）。
+
+#### 本システムに必要なサービスはすべて Free Tier に含まれます
+
+| サービス | 新体験での可否 |
+|---|---|
+| Amazon Bedrock | ✅ Free Tier |
+| AWS Lambda | ✅ Free Tier（Lambda@Edge のみ非対応・本件では不要） |
+| Amazon S3 | ✅ Free Tier（S3 Access Grants のみ非対応・不要） |
+| Amazon CloudFront | ✅ Free Tier（Lambda@Edge のみ非対応・不要） |
+| Amazon EventBridge | ✅ Free Tier |
+| AWS Secrets Manager / KMS / IAM | ✅ Free Tier |
+| CloudWatch / CloudWatch Logs / CloudTrail | ✅ Free Tier |
+| AWS Budgets / ACM / Route 53 | ✅ Free Tier |
+
+**Phase 2・Phase 3 も含めて、アカウントのアップグレードは不要です。**
+
+#### この方式での変更点（本ドキュメントの他の節より優先）
+
+| 項目 | 読み替え |
+|---|---|
+| **ルートユーザーの MFA** | ルートユーザーは存在しません。**AWS Builder ID に MFA を設定**してください（AWS Settings > MFA の管理） |
+| **IAM Identity Center の構築** | **不要**。AWS が自動構成します（§A-1 の手順 6 は飛ばしてください） |
+| **AWS Budgets $20 アラート** | **支出上限（spend limit）** の方が強力です。ハードな上限として設定できます |
+| **アカウントエイリアス** | 設定不可（Not applicable） |
+| **リージョン** | 変更不可。`src/market_report/resources/settings.toml` の `region` をプロジェクトのリージョンに合わせてください |
+
+#### ⚠️ クロスリージョン機能は使えません
+
+「Multi-Region or cross-Region features are not supported for any services」と明記されています。本システムは全リソースを単一リージョンに置く設計（[05](05-decisions.md) A-4）なので影響ありませんが、**独自ドメインを使う際は注意**が必要です（CloudFront の ACM 証明書は `us-east-1` に置く必要があるため）。当面はデフォルトドメインを使う方針なので問題になりません。
+
+---
+
+### A-0-P. 🔴 Free Plan では Claude を呼べない（実機で確認）
+
+**[2026-11-24 実機確認]** 新体験の **Free Tier（Free Plan）のままでは、Bedrock の
+Claude モデルを呼び出せません。** コンソールでモデルが一覧に見えても、利用契約を
+結べないため「有効化」できません。
+
+`GetFoundationModelAvailability` の実際の応答:
+
+```
+regionAvailability      AVAILABLE       ← リージョンでは提供されている
+entitlementAvailability AVAILABLE       ← 利用権は取得可能
+authorizationStatus     NOT_AUTHORIZED  ← 未認可
+agreementAvailability   NOT_AVAILABLE   ← ★ 利用契約を結べない
+```
+
+この状態で推論を呼ぶと、エンドポイントによって次のように見えます。**どちらも
+「モデルが無い」「ID が違う」ように見えるため誤診しやすい**ので注意。
+
+| エンドポイント | 返るもの | 誤解しやすい点 |
+|---|---|---|
+| `bedrock-mantle` | **404** `The model '...' does not exist` | リージョン違い／ID 違いに見える |
+| `bedrock-runtime` | **400** `Operation not allowed` | リクエスト形式の誤りに見える |
+
+> **403 AccessDenied は返りません。** 「権限エラーが出ないから権限は足りている」という
+> 判断は誤りです。`GetFoundationModelAvailability` で確認してください。
+
+#### ⚠️ Paid Plan へのアップグレードでは解決しません（実機で確認）
+
+**[2026-11-24 実機確認]** 支払い方法を登録し Paid Plan にアップグレードしても、
+`agreementAvailability` は `NOT_AVAILABLE` のままでした。
+
+理由は **AWS Marketplace** です。Bedrock のサードパーティモデル（Claude を含む）の
+利用契約は Marketplace のサブスクリプション経由で結ばれますが、公式ドキュメントの
+機能比較表で **「Use AWS Marketplace: No」** とされており、Marketplace が使えるのは
+**「高度な機能を有効化（Activate advanced AWS features）」した場合のみ**です。
+
+#### 「高度な機能の有効化」の代償
+
+| 項目 | 内容 |
+|---|---|
+| ⚠️ **取り消し不可** | "Activation cannot be reversed" |
+| ⚠️ **支出上限が削除される** | "If you have a spend limit... it is removed. **You cannot create a spend limit**" — コスト防御を失う |
+| ⚠️ 管理負荷の増加 | AWS Organization の管理者になり、管理アカウント用のルートメールとパスワード設定が必要 |
+| ✅ 得られるもの | 全サービス、リージョン選択、Marketplace、マルチリージョン |
+
+**本システムのためだけに払うには重い代償**です。特に支出上限を失う点は、
+コスト管理を重視してきた本プロジェクトの方針と逆行します。
+
+#### → Claude API 直接呼び出しへ切り替え（採用）
+
+[05](05-decisions.md) A-119 のとおり、**Claude API を直接呼ぶ構成を既定**にしました。
+
+```bash
+export ANTHROPIC_API_KEY='sk-ant-...'
+.venv/bin/market-report doctor
+```
+
+API キーは https://console.anthropic.com/settings/keys で発行します。
+
+| 影響 | 内容 |
+|---|---|
+| コード変更 | `provider` 設定の追加のみ（クライアント生成部で分岐） |
+| **コスト試算** | **[03](03-cost-and-tokens.md) はもともとファーストパーティ単価で計算していたため、そのまま正確値になる** |
+| Phase 2 | S3 / CloudFront / Lambda / EventBridge / Terraform / OIDC はそのまま。Lambda が「IAM で Bedrock」→「Secrets Manager から API キーを取得」に変わるだけ |
+| 失うもの | AWS の境界内で完結する性質 |
+
+Bedrock に戻す場合は `--provider bedrock` または `settings.toml` の `provider` で切り替えられます。
+
+#### （参考）Bedrock を使う場合の手順
+
+
+
+1. **AWS Settings**（`https://settings.aws.com`）を開く
+2. ナビゲーションから **「Billing」**
+3. **「Upgrade」** → **「Get started」**
+4. **支払い方法を登録**（居住地により税情報の入力が必要）
+5. **「Upgrade account」**
+6. **「Set spend limits」で支出上限を設定**（推奨。月 $20 など）
+
+| 確認事項 | 内容 |
+|---|---|
+| ⚠️ **取り消せません** | "You cannot reverse the upgrade process." |
+| ✅ **$100 のクレジットは失われない** | 超過分のみ課金。クレジット枯渇でアカウントが閉じることもない |
+| ✅ **支出上限が使える** | Budgets のアラートより強い、ハードな上限 |
+| ℹ️ 「高度な機能の有効化」とは別 | Paid Plan へのアップグレードだけではリージョン変更はできない |
+
+アップグレード後、以下で `agreementAvailability` が `AVAILABLE` に変わることを確認してから
+コンソールでモデルアクセスを付与してください。
+
+```bash
+.venv/bin/python scripts/probe_bedrock.py
+```
+
+#### 診断スクリプト
+
+`scripts/probe_bedrock.py` は、推測ではなく AWS に直接問い合わせて切り分けます。
+
+| 確認内容 | API |
+|---|---|
+| そのリージョンに Claude が存在するか | `ListFoundationModels` |
+| 推論プロファイルの状態 | `ListInferenceProfiles` |
+| **モデルアクセスの付与状況** | **`GetFoundationModelAvailability`** |
+
+---
+
+### A-0-F. ⚡ 最速ルート（構築優先・Phase 1 を動かすまで）
+
+**Phase 1 で AWS に必要なのは Bedrock だけ**です。S3 / Lambda / IAM ロールは Phase 2
+まで不要なので、IAM Identity Center の構築は後回しにできます。
+
+| # | 作業 | 所要 |
+|---|---|---|
+| 1 | **ルートユーザーに MFA**（後述の理由により、これだけは推奨） | 5分 |
+| 2 | **AWS Budgets で月額 $20 のアラート** | 3分 |
+| 3 | **Bedrock モデルアクセスを有効化**（**リージョン `ap-northeast-1`**／A-2） | 5分 |
+| 4 | **Bedrock API キーを発行**（下記） | 2分 |
+| 5 | `market-report doctor` で検証 | 1分 |
+
+**合計 約15分。** IAM Identity Center（約20分）と IAM ポリシー設計を飛ばせます。
+
+#### Bedrock API キー（ベアラートークン）を使う
+
+AWS CLI も IAM ユーザーも作らずに Bedrock を呼べます。
+
+1. AWS コンソール（**ap-northeast-1**）で **Amazon Bedrock** を開く
+2. 左メニューの **「API キー」** から発行
+   - **短期（最大12時間）** — 構築中はこちらで十分。自動で失効する
+   - **長期** — 期限まで有効。AWS は「探索用途のみ」を推奨
+3. 発行されたキーを環境変数に入れる
+
+```bash
+export AWS_BEARER_TOKEN_BEDROCK='<発行されたキー>'
+export AWS_REGION=ap-northeast-1
+```
+
+```bash
+.venv/bin/market-report doctor
+```
+
+`AWS_BEARER_TOKEN_BEDROCK` は **通常の AWS 認証情報より優先**されます（[02](02-bedrock-selection.md) §2）。
+
+#### ⚠️ 短期キーと長期キーのリージョンの扱いが違う
+
+**[確認済: AWS 公式ドキュメント]**
+
+| | 短期キー | 長期キー |
+|---|---|---|
+| 有効期間 | 最大 12 時間（コンソールセッション依存） | 指定した有効期限まで |
+| **リージョン** | **発行したリージョンでのみ有効** | **リージョン非依存**（IAM ユーザーに紐づく） |
+| 実体 | 一時認証情報（`ASIA...`） | IAM ユーザー + サービス固有の認証情報 |
+| AWS の推奨 | 本番向け | **探索用途のみ** |
+
+> 短期キーを別リージョンで使うことはできません。公式手順も「**コンソールでそのリージョンに切り替えて新しいキーを発行する**」です。リージョンをまたいで使い回す方法はありません。
+
+**どちらを使っても、モデルアクセスの有効化はリージョンごとに必要です。** キーの種類ではこの制約は回避できません。
+
+#### この選択で受け入れるリスク
+
+正確に把握しておくべき点です。
+
+| 項目 | 内容 |
+|---|---|
+| **影響範囲は Bedrock に限定** | このキーは S3 / IAM / EC2 を操作できません。**漏洩しても推論コストが上限** |
+| **コスト上の上限は Budgets** | だから #2 のアラートは残す価値があります |
+| **長期キーは長命な認証情報** | シェルの履歴や `.zshrc` に残ります。**短期キー（12h）を推奨** |
+| セッション失効がない | Identity Center のような自動失効はありません |
+
+> **#1（ルート MFA）だけは残すことを推奨します。** ルートを奪われると、Bedrock に
+> 限らず**アカウント全体**（EC2 の大量起動など）が可能になり、被害額が桁違いになります。
+> 5 分で終わり、以後の作業を一切妨げません。判断は ken さんに委ねます。
+
+#### 構築が落ち着いたら
+
+Phase 2 では GitHub OIDC・Lambda 実行ロール・Terraform のために**どのみち IAM を
+きちんと設計します**（[06](06-cicd-and-environments.md)）。Identity Center の構築は
+その流れで行うのが自然で、今やらなくても手戻りになりません。
+
+- [ ] 構築完了後に **Bedrock API キーを削除**する
+- [ ] Phase 2 で IAM Identity Center へ移行する
+
+---
+
+### A-1. アカウント作成直後にやること（**従来方式の場合**。丁寧にやる手順）
+
+> **急ぐ場合は A-0-F の最速ルートを使ってください。**
+> **プロジェクト方式（A-0-N）の場合は、手順 6（IAM Identity Center）は不要です。**
+
 
 **アカウントを作った直後はルートユーザーでログインしている状態です。これが最も危険な状態なので、まずルートを封印します。**
 
 | # | 作業 | 誰で | 所要 |
 |---|---|---|---|
-| 1 | **ルートユーザーに MFA を設定** | ルート | 5分 |
+| 1 | **ルートユーザーに MFA を設定**（**2 デバイス**。A-1-1） | ルート | 10分 |
 | 2 | **ルートのアクセスキーが無いことを確認**（あれば削除） | ルート | 1分 |
 | 3 | **アカウントエイリアスを設定**（サインイン URL が分かりやすくなる） | ルート | 1分 |
 | 4 | **請求アラートを有効化**（請求ダッシュボード > 請求設定） | ルート | 3分 |
@@ -148,6 +478,48 @@ Terraform を環境別ディレクトリ構成にしてあるため（[06](06-ci
 > **6 の注意:** IAM Identity Center のインスタンスはリージョンに紐づきます。**`ap-northeast-1`（東京）で有効化**してください。後から変更するにはインスタンスの削除・再作成が必要です。
 
 > **4・5 の注意:** 請求情報へのアクセスはデフォルトでルートに限定されています。Identity Center のユーザーで請求を見たい場合は、ルートで「IAM ユーザー/ロールによる請求情報へのアクセス」を有効化してください。
+
+### A-1-1. MFA の設定手順
+
+#### ルートユーザーの MFA
+
+1. **ルートユーザーでサインイン**
+2. 画面**右上のアカウント名**をクリック → **「セキュリティ認証情報」**
+3. **「多要素認証 (MFA)」** のパネル → **「MFA デバイスの割り当て」**
+4. **デバイス名**を入力（例: `ken-touchid` / `ken-iphone`）
+5. **MFA デバイスのタイプ**を選ぶ（下表）
+6. 画面の指示に従って登録
+7. **「MFA を追加」**
+
+| タイプ | 具体例 | 強度 | 備考 |
+|---|---|---|---|
+| **パスキー / セキュリティキー** | **Touch ID**、YubiKey | ◎ 最強 | フィッシング耐性がある。Mac なら Touch ID がそのまま使える |
+| **認証アプリ（TOTP）** | 1Password、Authy、macOS の「パスワード」アプリ、Google Authenticator | ○ | QR をスキャンし、**連続する 2 つのコード**を入力する |
+| ハードウェア TOTP トークン | 物理トークン | ○ | 購入が必要 |
+
+> ### ⚠️ MFA デバイスは必ず 2 つ登録してください
+>
+> **ルートユーザーには最大 8 個の MFA デバイスを登録できます。**
+>
+> 1 つしか登録していない状態で**その端末を紛失・故障させると、ルートアカウントから締め出されます**。復旧は AWS サポートとのやり取りになり、本人確認に時間がかかります。
+>
+> **推奨: Touch ID（パスキー）+ スマートフォンの認証アプリ の 2 つ。** 別々の物理デバイスにすることが重要で、同じ Mac に 2 つ登録しても冗長性にはなりません。
+
+> **認証アプリをクラウド同期する場合の注意:** 1Password や iCloud キーチェーンに TOTP を保存すると可用性は上がりますが、**そのアカウントが侵害されると MFA が意味を失います**。同期先のアカウント自体にも強固な MFA を設定してください。
+
+#### IAM Identity Center ユーザーの MFA
+
+ルートとは**別に**設定が必要です。
+
+- **ユーザー側**: Identity Center のポータル URL に初回サインインする際、MFA の登録を求められます
+- **管理者側**: IAM Identity Center > 設定 > 認証 > **多要素認証** で、「サインイン時に常に MFA を要求」などのポリシーを設定できます
+
+#### 設定できたかの確認
+
+- ルート: 一度サインアウトし、再サインイン時に MFA を求められること
+- 「セキュリティ認証情報」の MFA パネルに**デバイスが 2 つ**並んでいること
+
+---
 
 ### A-2. ⚠️ Bedrock のモデルアクセスはリージョンごと
 
@@ -182,6 +554,28 @@ Terraform を環境別ディレクトリ構成にしてあるため（[06](06-ci
 
 > Bedrock への検証リクエストは `max_tokens=4` の極小呼び出しです。**3 モデル合計で $0.001 未満**です。
 > AWS に触れずに確認したい場合は `--quick` を付けてください。
+
+---
+
+### A-0-L. 🔑 新サインアップ体験での認証（`aws login`）
+
+**[確認済: AWS 公式ドキュメント / 2026-11-25]**
+
+プロジェクト方式では **静的なアクセスキーを発行しません**。`aws login` でブラウザ認証し、
+一時的なプロファイルを取得します。**AWS CLI が前提**です。
+
+```bash
+aws login --profile sandp
+```
+
+| 項目 | 内容 |
+|---|---|
+| 有効期間 | 12 時間（同コマンドで更新） |
+| 再認証なしの期間 | 90 日 |
+| セットアップ | AWS Settings → プロジェクト → 「Create and manage cloud infrastructure」→「Use your AWS credentials with AI coding tools」 |
+| 複数プロジェクト | プロファイル名で切り替え（`aws login --profile <別名>`） |
+
+手順の詳細は [13](13-phase2-plan.md) を参照。
 
 ---
 
@@ -221,12 +615,15 @@ IAM Identity Center は初回セットアップが IAM ユーザーより少し�
 | Python | **3.14.2 あり** | （Lambda と揃えるなら 3.13 も入れる。下記参照） |
 | Node.js | あり | 作業不要 |
 | git | あり（想定） | — |
-| **AWS CLI** | **未インストール** | `brew install awscli` |
-| Terraform | 未インストール | Phase 2 で `brew install terraform` |
+| **AWS CLI** | 未インストール | **公式インストーラを推奨**（Homebrew 版はソースビルドで非常に遅い。[13](13-phase2-plan.md) 参照） |
+| Terraform | ✅ **導入済み**（v1.17.2） | `brew install hashicorp/tap/terraform`（**core にはありません**） |
 
 ```bash
-brew install awscli
+curl -o "/tmp/AWSCLIV2.pkg" "https://awscli.amazonaws.com/AWSCLIV2.pkg" && sudo installer -pkg /tmp/AWSCLIV2.pkg -target /
 ```
+
+> **`brew install awscli` は避けてください。** `aws-c-*` 群をソースからビルドするため
+> 非常に遅く、実測で 45 分経っても完了しませんでした（2026-11-25）。
 
 **Python のバージョンについて [要確認]:** ローカルは 3.14.2、Lambda ターゲットは 3.13 を想定しています。純 Python パッケージのみなら差は問題になりませんが、厳密に揃えたい場合は `pyenv` で 3.13 を入れる選択肢があります。
 
@@ -336,7 +733,7 @@ rm x-credentials.json   # 必ず削除
 
 | 項目 | 月額 | 支払い先 |
 |---|---|---|
-| Bedrock（Claude Opus 5・日次22回 + 週次月次年次） | 約 $6.0 | AWS **[要確認: Bedrock の実単価]** |
+| **Claude API**（Opus 5・日次22回 + 週次月次年次） | 約 $7.4 | **Anthropic** |
 | KMS 顧客管理キー × 2（用途別に分離） | 約 $2.00 | AWS **[推定]** |
 | Secrets Manager × 1（Phase 3 以降） | $0.40 | AWS |
 | その他 AWS（Lambda / S3 / CloudFront / Scheduler） | $0 | 無料枠内 |
@@ -354,11 +751,21 @@ rm x-credentials.json   # 必ず削除
 
 上記すべてを揃える必要はありません。**Phase 1 のコード実装を始めるために必要なのは以下だけです。**
 
-1. [ ] **専用メールアドレス**（+ そのメールの MFA）→ **AWS アカウントを新規作成** + 支払い方法
-2. [ ] ローカルから AWS を操作できる状態（IAM Identity Center 推奨）
-3. [ ] `brew install awscli`
-4. [ ] Bedrock で **Claude Opus 5**（または暫定で Sonnet 5）のモデルアクセス有効化
-5. [ ] GitHub リポジトリ（private）
-6. [ ] [00](00-open-items.md) §1 の 3 件への回答
+**現在の既定構成（`provider = "anthropic"`）では AWS は不要です。**
 
-**4 が承認待ちになっても Sonnet 5 で開発を進められます。** また `--dry-run` は AWS 認証なしで動くため、準備の完了を待たずに成果物を確認できます。
+1. [ ] Claude Console のアカウント（https://platform.claude.com/）
+2. [ ] **`ant auth login`**（推奨）または **API キーの発行** → §A-0-C
+3. [ ] 支払い方法 / クレジットの設定
+4. [ ] 使用量の上限を設定（月 $20 程度を推奨）
+5. [ ] GitHub リポジトリ（private）
+6. [ ] `market-report doctor` が通ること
+
+Phase 2（AWS 構築）で追加になるもの:
+
+7. [ ] AWS アカウント（専用メールアドレス + MFA）
+8. [ ] `brew install awscli` / `brew install hashicorp/tap/terraform`
+
+`--dry-run` は認証なしで動くため、準備の完了を待たずに成果物を確認できます。
+
+> Bedrock に戻す場合は `--provider bedrock` で切り替えられます。ただし新サインアップ体験の
+> AWS アカウントでは **「高度な機能の有効化」が必要**です（§A-0-P）。

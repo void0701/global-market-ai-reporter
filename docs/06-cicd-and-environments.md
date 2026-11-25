@@ -5,6 +5,36 @@
 
 ## 0. 前提: 未整備の項目
 
+> ### 🔴 着手前に必ず読む: アカウント制約の検証
+>
+> 本プロジェクトの AWS アカウントは **「Sign up for AWS (new)」（プロジェクト方式）** です。
+> AWS が管理する SCP / RCP が適用されており、**こちらからは変更できません**。
+> これまでに **2 回**、この制約で作業が止まっています（AWS Marketplace が使えず Bedrock の
+> モデル契約を結べない／リージョンを変更できない）。
+>
+> **未検証の権限が残っています。**
+>
+> | 操作 | 必要な権限 | 状態 |
+> |---|---|---|
+> | OIDC プロバイダの作成 | `iam:CreateOpenIDConnectProvider` | ❓ 未検証 |
+> | IAM ロールの作成 | `iam:CreateRole` | ❓ 未検証 |
+> | KMS CMK の作成 | `kms:CreateKey` | ❓ 未検証 |
+> | S3 バケットポリシー | `s3:PutBucketPolicy` | ❓ 未検証 |
+>
+> **本格的な HCL を書く前に、§2-0 の検証スパイクを実施してください。**
+> 500 行書いてから弾かれるのが最悪のパターンです。
+
+### このアカウント方式による前提の変更
+
+| 項目 | 本章での扱い |
+|---|---|
+| IAM Identity Center | **自前構築は不可かつ不要**（AWS が自動構成）。§0 の準備項目から除外 |
+| IAM ユーザー / ロール | **プログラマティックアクセス専用**。GitHub OIDC・Lambda 実行ロールは該当するので利用可（ただし上記の未検証事項あり） |
+| リージョン | **`ap-southeast-2` 固定**（変更不可） |
+| AWS Organizations | AWS 管理。自前利用は不可（単一アカウント設計のため影響なし） |
+| クロスリージョン機能 | **非対応。** CloudFront の独自ドメイン用 ACM 証明書は `us-east-1` 必須のため、**独自ドメイン移行時に問題になる可能性**（当面デフォルトドメインのため影響なし） |
+
+
 | 項目 | 現状 | 必要な作業 |
 |---|---|---|
 | git リポジトリ | **未初期化**（確認済） | `git init` |
@@ -63,9 +93,15 @@ prod: シークレット有り → 通常動作
 | CloudFront | **あり** | あり | 構成差を作らないため dev にも置く（下記参照） |
 | Lambda | あり | あり | 別関数 |
 | EventBridge Scheduler | **あり（無効状態）** | あり（有効） | `state = "DISABLED"` で作成 |
-| Secrets Manager（X API） | **なし** | あり | 1-1 の理由 |
+| Secrets Manager | **なし** | あり | **Phase 2 から**（`ANTHROPIC_API_KEY`）、Phase 3 で X 用を追加。下記 |
 | CloudWatch Logs | あり（保持 7日） | あり（保持 30日） | dev は短く |
 | AWS Budgets アラート | なし | あり | |
+
+**dev にシークレットを一切置かない理由:** `ANTHROPIC_API_KEY` が Phase 2 から必要になりますが、
+**dev には置きません。** dev の目的は S3 / OAC / IAM / Scheduler の**配線の検証**であり、
+スモークテストは `dry_run: true` で行うため LLM を呼びません。実際の解析品質の検証は
+ローカル実行で足ります（Phase 1 で実施済み）。これにより [05](05-decisions.md) A-28 の
+「dev はシークレットを持たない」という性質が Phase 2 以降も保たれ、コストも抑えられます。
 
 **dev にも CloudFront を置く理由:** S3 の Block Public Access + OAC（Origin Access Control）+ バケットポリシーの組み合わせは設定ミスが起きやすい箇所で、ここを dev で検証できないと prod で初めて壊れる。構成の差分は検証価値を下げるため、同じモジュールを両環境に適用する。コストはどちらも無料枠内。
 
@@ -74,6 +110,22 @@ prod: シークレット有り → 通常動作
 ---
 
 ## 2. Terraform の構成
+
+### 2-0. 🔴 最初にやること: 権限の検証スパイク（15分）
+
+本番の構成を書く前に、**このアカウントで必要な操作が許可されるかを最小構成で確認**します。
+
+```
+infra/spike/        ← ローカル state。確認後に destroy する
+  main.tf           S3 バケット1個 + KMS キー1個 + IAM ロール1個 + OIDC プロバイダ1個
+```
+
+| 結果 | 次の行動 |
+|---|---|
+| ✅ 全て apply できる | 本番の HCL を書き始めてよい |
+| ❌ いずれかが拒否される | **その時点で方針判断**（高度な機能の有効化 / 別アカウント / 構成変更）。HCL を書く労力が無駄にならない |
+
+確認が済んだら `terraform destroy` し、`infra/spike/` は削除します。
 
 ### 2-1. ディレクトリ構成
 
@@ -166,10 +218,22 @@ bootstrap の state はローカルに残り、GitHub 上には置かない（`.
 terraform {
   required_version = "~> 1.10"
   required_providers {
-    aws = { source = "hashicorp/aws", version = "~> 5.0" }
+    aws = { source = "hashicorp/aws", version = "~> 6.0" }
   }
 }
 ```
+
+> ### ⚠️ `~> 5.0` では Amplify が無言でハングする【改訂 2026-11-25 / R-7】
+>
+> 当初 `~> 5.0` としていましたが、**プロバイダ 5.100.0 は `aws_amplify_app` の作成で
+> 14 分間ハングしました**（出力なし）。実際にはレート制限のリトライを続けていただけで、
+> 6.74.0 に上げると原因が即座に表示されます。
+>
+> ```
+> BadRequestException: Rate exceeded while calling CreateApp, please slow down or try again later.
+> ```
+>
+> 詳細は [13 §8 R-7](13-phase2-plan.md)。
 
 `.terraform.lock.hcl` は**コミットする**。CI とローカルでプロバイダのバージョンが揺れるのを防ぐ。
 
@@ -178,6 +242,34 @@ terraform {
 ## 3. セキュリティ強化（B-4 の実装）
 
 B-4 で「できるだけ強固な方」という方針をいただいたため、Secrets Manager を採用する。ただし **Secrets Manager を選ぶだけでは強固にならない**。以下をセットで実装する。
+
+### 3-0. Lambda 実行ロールの権限（Claude API 構成）
+
+[05](05-decisions.md) A-119 で Bedrock から Claude API 直接に変更したため、**Lambda の IAM から
+Bedrock 関連の権限が消え、設計が単純になりました**。
+
+| 権限 | 用途 |
+|---|---|
+| `secretsmanager:GetSecretValue` | `ANTHROPIC_API_KEY` の取得（シークレットの完全 ARN に限定） |
+| `kms:Decrypt` | 上記シークレットの復号（`secrets` 用 CMK に限定） |
+| `s3:PutObject` | レポート用バケットのみ |
+| `logs:CreateLogStream` / `logs:PutLogEvents` | CloudWatch Logs |
+| **`s3:GetObject` / `s3:ListBucket`** | **`rebuild_index` が過去の全日次レコードを読む**（`pipeline.py:160`）。これなしでは 2 日目から `AccessDenied`【追加 2026-11-25 / [13 §8 R-2](13-phase2-plan.md)】 |
+| **`amplify:CreateDeployment` / `StartDeployment` / `GetJob`** | HTML の配信（§9）【追加 2026-11-25】 |
+| **`sns:Publish`** | 失敗通知（A-53）。検知方式は [13 §8 R-6](13-phase2-plan.md) |
+
+> **消えたもの:** `bedrock-mantle:CreateInference`、およびモデル ARN を Resource に指定する設計。
+> §6-2 で警告していた「IAM が旧モデル ARN のままで `AccessDenied`」という落とし穴も
+> **構造的に発生しなくなりました**。
+
+#### ⚠️ シークレットの読み込み方（要実装）
+
+現在のコードは `ANTHROPIC_API_KEY` を**環境変数から**読みます。Lambda では:
+
+- **Lambda の環境変数に直接入れてはいけません**（コンソールで誰でも見えます）
+- **ハンドラのコールドスタート時に Secrets Manager から取得し、`os.environ` に設定**します
+
+`lambda_handler.py` は未作成なので、Phase 2 でこの処理を実装します。
 
 ### 3-1. Secrets Manager の権限設計
 
@@ -316,7 +408,7 @@ workflow_dispatch（手動）または v* タグの push
 
 **prod は自動デプロイしない。** GitHub Environments に必須レビュアーを設定し、人間の承認を挟む。1 日 1 回のバッチシステムであり、デプロイ頻度を上げる必要がないため、安全側に倒す。
 
-### 4-5. Lambda のパッケージング
+### 4-5. Lambda のパッケージング【実測で更新 2026-11-24】
 
 ```bash
 pip install \
@@ -327,11 +419,34 @@ pip install \
   -r requirements-lambda.txt
 ```
 
-**アーキテクチャは x86_64 を採用。** arm64（Graviton）は単価が約 20% 安いが、本システムの Lambda コストは**無料枠内で $0**（[03](03-cost-and-tokens.md)）なので削減額はゼロ。一方 arm64 はクロスアーキテクチャのホイール取得を必要とし、ビルドの複雑さだけが増える。**コスト削減効果がない最適化は採らない。**
+#### ✅ 実測: zip 6.3MB。設計時の懸念は解消済み
 
-**zip は S3 経由でデプロイする**（`aws_lambda_function` の `s3_bucket` / `s3_key` + `source_code_hash`）。直接アップロードの 50MB 制限を構造的に回避でき、yfinance（pandas 依存）を含めることになった場合でも詰まらない。
+| 項目 | 実測 | 上限 |
+|---|---|---|
+| 展開後 | **29 MB** | 250 MB |
+| **zip 圧縮後** | **6.3 MB** | **50 MB（直接アップロード）** |
 
-**[要確認]** より厳格な再現性が必要なら `public.ecr.aws/lambda/python:3.13` コンテナ内でビルドする方式に切り替える。Phase 2 で `--platform` 指定の結果を実機確認し、問題があれば移行する。
+内訳: `anthropic` 17MB / `pydantic_core` 5MB / `pydantic` 2MB / 他。
+**`pandas` / `numpy` は含まれません。**
+
+> ### 設計時の懸念が 2 つとも解消しました
+>
+> **1. pandas 問題（[01](01-architecture.md) §3-2 / A-17）**
+> 「`yfinance` が pandas を引き込み zip が 60MB を超える」ため `MarketDataProvider` を抽象化し
+> Phase 2 で軽量実装に差し替える計画でした。**Phase 1 で `HttpChartProvider` を標準ライブラリ
+> のみで実装したため、この差し替え作業は既に完了しています。** Phase 2 の作業項目から外れます。
+>
+> **2. S3 経由デプロイ（A-46）**
+> 50MB 制限の回避のために S3 経由を選んでいましたが、**6.3MB なら直接アップロードで十分**です。
+> Terraform の `aws_lambda_function` に `filename` + `source_code_hash` を指定する形で構いません。
+> S3 経由にしても害はないので、**どちらでもよい**という位置づけに変更します。
+
+**アーキテクチャは x86_64 を採用。** arm64 は単価が約 20% 安いですが Lambda コストは無料枠内で
+$0 なので削減額はゼロ。クロスアーキテクチャのホイール取得という複雑さだけが増えます。
+
+**[要確認]** ローカルの Python が 3.12 になったため（3.14 が Homebrew から消えた）、
+Lambda ランタイムを **3.12 に揃えるか 3.13 のままにするか**は Phase 2 で判断します。
+揃えた方が検証環境との差分が減ります。
 
 ### 4-6. セキュリティスキャン【確定 2026-11-22】
 
@@ -412,55 +527,189 @@ prod へ apply → スモークテスト
 
 ---
 
-## 6. モデル差し替えの手順（B-1 の要件）
+## 6. モデル差し替えの手順【Claude API 構成に全面改訂 2026-11-24】
 
-「今後最新のモデルに差し替えられるようにしておきたい」というご要望に対する設計。
+「今後最新のモデルに差し替えられるようにしたい」という要件への対応です。
+
+> **Bedrock 構成よりも単純になりました。** Claude API 直接では **IAM とモデル ID が無関係**
+> なため、旧版（§6-2）で警告していた「IAM の Resource が旧モデル ARN のままで `AccessDenied`」
+> という落とし穴が**構造的に発生しません**。
 
 ### 6-1. モデルIDは Terraform 変数で管理する
 
-モデルIDをコードに埋め込まず、**Terraform 変数 → Lambda 環境変数 `BEDROCK_MODEL_ID`** として注入する。`settings.toml` の値は環境変数で上書きされる優先順とする。
+モデル ID をコードに埋め込まず、**Terraform 変数 → Lambda 環境変数 `BEDROCK_MODEL_ID`** として
+注入します（環境変数名は歴史的な経緯でこの名前ですが、Claude API でも同じ変数を読みます）。
+設定の優先順は **環境変数 > `settings.toml`** です。
 
 ```hcl
 # envs/prod/terraform.tfvars
-bedrock_model_id = "anthropic.claude-opus-5"
-
-# IAM の Resource もこの変数から生成する
-allowed_model_ids = ["anthropic.claude-opus-5"]
+provider_name = "anthropic"      # MARKET_REPORT_PROVIDER
+model_id      = "claude-opus-5"  # BEDROCK_MODEL_ID
 ```
 
-これにより **モデル差し替えは tfvars の 2 行変更 + apply だけ**で完了する。Python コードの変更も Lambda zip の再ビルドも不要。
+**差し替えは tfvars の 1 行変更 + apply だけ**で完了します。Python コードの変更も
+Lambda zip の再ビルドも不要です。
 
-### 6-2. IAM とモデルIDを同じ変数から生成する
+### 6-2. Bedrock に戻す場合
 
-**よくある落とし穴:** Lambda の環境変数だけ新モデルに変えても、IAM の `bedrock-mantle:CreateInference` の Resource が旧モデル ARN に固定されていると `AccessDeniedException` になる。
-
-これを防ぐため、`allowed_model_ids` 変数から環境変数と IAM ポリシーの両方を生成する。移行期間中は新旧両方を列挙できる。
+AWS 側の制約が解消した場合（[07 §A-0-P](07-prerequisites.md)）、同じ仕組みで戻せます。
 
 ```hcl
-allowed_model_ids = ["anthropic.claude-opus-5", "anthropic.claude-opus-5-5"]
-bedrock_model_id  = "anthropic.claude-opus-5-5"   # 実際に使うもの
+provider_name = "bedrock"
+model_id      = "anthropic.claude-opus-5"
 ```
+
+このとき **Lambda の IAM に `bedrock-mantle:CreateInference` を追加**する必要があります。
+`provider` と `model_id` の接頭辞（`anthropic.`）は設定読み込み時に自動で整合させるため
+（[05](05-decisions.md) A-121）、取り違えによる 404 は起きません。
 
 ### 6-3. 差し替え時のチェックリスト
 
-新しいモデルに切り替える際、以下を順に確認する。
-
-1. **Bedrock コンソールでそのモデルのアクセスを有効化**（新モデルは個別申請が必要な場合がある）
-2. **API の破壊的変更を確認** — 世代が変わるとパラメータが変わることがある（例: `budget_tokens` は現世代で 400 エラー、`temperature` も現世代では使用不可。[02](02-bedrock-selection.md) 参照）
-3. **`allowed_model_ids` に新モデルを追加**して先に apply（IAM を先に広げる）
-4. **dev で実行して出力品質を比較** — 同じニュースセットで旧モデルの出力と並べて確認する
-5. **トークン消費量の変化を確認** — 新世代はトークナイザが変わることがあり、コストが変動する。[03](03-cost-and-tokens.md) を更新する
-6. **prod の `bedrock_model_id` を変更して apply**
-7. 旧モデルを `allowed_model_ids` から外す
-
-ステップ 4 のために、**同じ入力で複数モデルを走らせて出力を比較できる CLI オプション**を Phase 1 で用意しておく価値が高い（`--model` でモデルIDを上書きできるようにする）。
-
----
+1. **ローカルで新モデルを試す** — `market-report run --model <新モデルID>`
+2. **出力品質を比較** — 同じニュースセットで旧モデルの出力と並べる。記事は全件保存して
+   いるため `reanalyze` で**同一入力での比較**ができます（[11 §7](11-data-retention.md)）
+3. **トークン消費の変化を確認** — 世代が変わるとトークナイザが変わることがあり、コストが
+   変動します。[03](03-cost-and-tokens.md) を更新
+4. **API の破壊的変更を確認** — 例: `budget_tokens` は現世代で 400 エラー、`temperature` も
+   使用不可（[02](02-bedrock-selection.md)）
+5. **`doctor` で疎通確認** — `market-report doctor` が候補モデルの可否を判定します
+6. **prod の tfvars を変更して apply**
 
 ## 7. Phase ごとの作業範囲
 
 | Phase | CI/CD 関連の作業 |
 |---|---|
 | **Phase 1** | `git init` + GitHub リポジトリ作成、`ci.yml` の `python` / `security`（gitleaks + pip-audit）ジョブ、pre-commit フック、Dependabot 設定、ブランチ保護設定 |
-| **Phase 2** | `infra/bootstrap` の手動 apply（OIDC + state バケット + **KMS 2 キー** + 3 ロール）、`modules/` と `envs/` の記述、`ci.yml` に `terraform` / `checkov` 追加、`deploy-dev.yml`、`deploy-prod.yml` |
-| **Phase 3** | prod のみに `secrets` モジュールを追加、X 認証情報を手動投入、CloudTrail データイベント設定 |
+| **Phase 2** | **§2-0 の権限検証スパイク**（最初）、`infra/bootstrap` の手動 apply（OIDC + state バケット + KMS 2 キー + 3 ロール）、`modules/` と `envs/` の記述、**`lambda_handler.py`（Secrets Manager からの API キー取得を含む）**、prod に `ANTHROPIC_API_KEY` を手動投入、`ci.yml` に `terraform` / `checkov` 追加、`deploy-dev.yml`、`deploy-prod.yml` |
+| **Phase 3** | prod に X 用シークレットを追加（2 個目）、X 認証情報を手動投入、CloudTrail データイベント設定 |
+
+---
+
+## 8. 🔬 S0 権限検証スパイクの結果（2026-11-25 実施）
+
+`infra/spike/` で 17 リソースを実際に作成し、AWS 管理の SCP に拒否されないかを確認しました。
+
+### 結果: 16/17 成功
+
+| # | 検証対象 | 結果 |
+|---|---|---|
+| 1 | S3 バケット + Block Public Access + **バケットポリシー** | ✅ |
+| 2 | **KMS CMK** + エイリアス | ✅ |
+| 3 | **IAM ロール ×3** + インラインポリシー | ✅ |
+| 4 | **GitHub OIDC プロバイダ** + 引き受けロール | ✅ |
+| 5 | Secrets Manager | ✅ |
+| 6 | Lambda 関数 | ✅ |
+| 7 | EventBridge Scheduler（`Asia/Tokyo`） | ✅ |
+| 8 | CloudFront OAC | ✅ |
+| **8'** | **CloudFront ディストリビューション** | ❌ |
+
+**未検証だった 4 権限（OIDC / IAM ロール / KMS / バケットポリシー）はすべて通りました。**
+Phase 2 の設計は、配信層を除いてそのまま使えます。
+
+### ❌ CloudFront の失敗理由（SCP ではない）
+
+```
+AccessDenied: Your account must be verified before you can add new CloudFront
+resources. To verify your account, please contact AWS Support.
+```
+
+**新規アカウントに対する不正利用対策の検証**であり、SCP による恒久的な制約ではありません。
+AWS サポートへの問い合わせで解除できますが、**待ち時間が発生するため代替手段を採用します**。
+
+### ⚠️ 副次的な発見: `aws login` の認証情報は Terraform から読めない
+
+公式ドキュメントの「External tools may not be supported」が実際に発生しました。
+
+```
+Error: No valid credential sources found
+```
+
+`~/.aws/config` の `login_session` は AWS CLI 独自のキーで、Terraform の AWS SDK は
+理解しません。**`credential_process` で橋渡しして解決**しました。
+
+```ini
+[profile terraform]
+region = ap-southeast-2
+credential_process = aws configure export-credentials --profile default --format process
+```
+
+AWS CLI に標準形式へ変換させる方式です。`aws login` のセッションが有効な間は自動更新され、
+以後は `export AWS_PROFILE=terraform` だけで Terraform が動きます。
+
+### 後片付け
+
+16 リソースすべて `terraform destroy` 済み。残存は **KMS キー 1 個が 7 日の削除待機中**
+（約 $0.25）のみ。AWS の仕様で短縮できません。
+
+---
+
+## 9. ✅ 配信層の決定: AWS Amplify Hosting（2026-11-25 検証）
+
+CloudFront の代替として **AWS Amplify Hosting** を実機検証し、採用を決めました。
+
+### 検証結果
+
+実際のレポート HTML をデプロイし、以下を確認しました。
+
+| 確認項目 | 結果 |
+|---|---|
+| アプリ / ブランチの作成 | ✅ CloudFront の 403 は出ない |
+| 手動デプロイ（zip アップロード） | ✅ `SUCCEED` |
+| **HTTPS 配信** | ✅ `https://main.<appId>.amplifyapp.com` |
+| **サブディレクトリ**（`/reports/YYYY-MM-DD.html`） | ✅ 200 |
+| `/archive.html` | ✅ 200 |
+| **HTTP → HTTPS リダイレクト** | ✅ 301 |
+
+レスポンスヘッダーは `x-cache: Hit from cloudfront` / `server: AmazonS3`。
+**内部では CloudFront + S3 が使われており、AWS 管理のディストリビューションのため
+アカウント検証を要求されません。** 自前で作れなかった構成を Amplify 経由で使えます。
+
+### なぜ Amplify を選ぶか
+
+| 比較 | Amplify | GitHub Pages | Cloudflare Pages | S3 静的ホスティング |
+|---|---|---|---|---|
+| HTTPS | ✅ | ✅ | ✅ | ❌ **HTTP のみ** |
+| 費用 | 無料枠 | 無料 | 無料 | 無料枠 |
+| **AWS 内で完結** | ✅ | ❌ | ❌ | ✅ |
+| ベンダーの増加 | なし | なし（既存） | **あり** | なし |
+| 独自ドメイン | ✅ | ✅ | ✅ | △ |
+| 実機検証 | ✅ **済** | 未 | 未 | — |
+
+**S3 静的ホスティングは HTTPS が使えない**ため除外（X に `http://` のリンクを貼ることになり、
+Block Public Access を解除する必要もあってセキュリティ設計と衝突します）。
+
+GitHub Pages / Cloudflare Pages も有力でしたが、**Amplify なら AWS 内で完結し、
+請求先・IAM・Terraform の管理対象が増えません**。
+
+### 設計への影響
+
+**変更は配信層だけです。** S3 は `raw/` `data/` の保管用として検証済みのまま使います。
+
+```
+raw/ data/ の保管   → S3（変更なし）
+HTML の公開配信      → CloudFront → **Amplify Hosting**
+```
+
+| 項目 | 変更前 | 変更後 |
+|---|---|---|
+| Terraform リソース | `aws_cloudfront_distribution` + OAC + バケットポリシー | `aws_amplify_app` + `aws_amplify_branch` |
+| Lambda の処理 | S3 に HTML を PUT | S3 に HTML を PUT **+ Amplify へデプロイ** |
+| 必要な IAM | `s3:PutObject` | `s3:PutObject` + `amplify:CreateDeployment` / `StartDeployment` |
+| dev 環境 | CloudFront を置いて OAC を検証 | **Amplify アプリを dev にも置く**（構成差を作らない方針は維持） |
+
+### 残る検証項目
+
+| # | 内容 |
+|---|---|
+| 1 | **Terraform の `aws_amplify_app` / `aws_amplify_branch` が作成できるか**（CLI では確認済み） |
+| 2 | **Lambda から Amplify へデプロイできるか**（`CreateDeployment` → zip アップロード → `StartDeployment`） |
+| 3 | ~~存在しないパスが 301 を返す挙動の調整~~ → ✅ **不要と判明**（2026-11-25）。`301 /nope/` を 1 回経て **404** で終わる。Amplify 既定の pretty-URL 挙動で、`customRules` は要らない |
+| 4 | 独自ドメインの設定（当面はデフォルトドメインを使用） |
+
+### 追加で判明したこと（2026-11-25 / 詳細は [13 §8](13-phase2-plan.md)）
+
+| # | 内容 |
+|---|---|
+| **R-3** | **手動デプロイはサイト全体の置き換え。** `--file-map` に宣言してアップロードしなかったファイルは**消える**（md5 は「据え置き」の印にならない）。毎回、全レポートを含む zip を送る必要がある。実測 HTML 96KB → zip 33KB（約 3 倍圧縮）で、5 年分でも zip 約 13MB |
+| **R-7** | `aws_amplify_app` は **AWS プロバイダ 5.x で無言ハング**。`~> 6.0` に固定する（§2-5 を改訂済み）。`CreateApp` のレート上限は厳しく、**`destroy` → `apply` の繰り返しはスロットリングされる** |
+| 残 1 | **Terraform での作成は未確認。** 上記スロットリングのため検証が完了していない（CLI 経路は ✅ 確認済み）。時間を置いて再試行する |

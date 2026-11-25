@@ -133,7 +133,7 @@ class DailyAnalysis(BaseModel):
 
 ## 5. 設定ファイル
 
-### `config/feeds.toml`
+### `resources/feeds.toml`（当初 `config/feeds.toml`・A-149 で移動）
 
 ```toml
 [[feed]]
@@ -149,7 +149,7 @@ weight = 1.0
 
 フィードの追加・削除がコード変更なしでできることを重視。
 
-### `config/settings.toml`
+### `resources/settings.toml`（当初 `config/settings.toml`・A-149 で移動）
 
 ```toml
 [bedrock]

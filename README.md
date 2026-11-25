@@ -30,7 +30,10 @@ open output/index.html
 （[docs/07-prerequisites.md](docs/07-prerequisites.md)）。設定できたかは `doctor` で検証できます。
 
 ```bash
-export AWS_PROFILE=<プロファイル名>
+# 最速ルート: Bedrock API キーだけで動く（docs/07 §A-0-F）
+export AWS_BEARER_TOKEN_BEDROCK='<Bedrock コンソールで発行したキー>'
+export AWS_REGION=ap-northeast-1
+
 .venv/bin/market-report doctor   # 使えるモデルまで判定する
 .venv/bin/market-report run
 ```
@@ -89,8 +92,8 @@ RSS 11本 ─┬─► 全件保存（重複排除前）        ← トークン
 ## ディレクトリ
 
 ```
-config/           feeds.toml（RSS 11本）/ settings.toml（市況40系列・閾値）
 src/market_report/
+  resources/      feeds.toml（RSS 11本）/ settings.toml（市況40系列・閾値）
   collectors/     rss.py（鮮度チェック付き）/ market.py（Provider 抽象）
   processing/     normalize.py / dedupe.py（標準ライブラリのみ）
   analysis/       client.py / prompts.py / analyzer.py / aggregate.py / scoring.py

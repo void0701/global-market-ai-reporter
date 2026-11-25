@@ -53,12 +53,12 @@ s_and_p/
 ├── .env.example                # AWS_REGION, AWS_PROFILE 等
 ├── .gitignore
 ├── docs/                       # 本ドキュメント群
-├── config/
-│   ├── feeds.toml              # RSS フィード定義（追加はコード変更不要）
-│   └── settings.toml           # モデルID・閾値・銘柄シンボル・記事上限
 ├── src/
 │   └── market_report/
-│       ├── config.py           # tomllib + pydantic-settings でロード
+│       ├── resources/          # ★設定はパッケージに同梱する（A-149）
+│       │   ├── feeds.toml      #   RSS フィード定義（追加はコード変更不要）
+│       │   └── settings.toml   #   モデルID・閾値・銘柄シンボル・記事上限
+│       ├── config.py           # tomllib + importlib.resources でロード
 │       ├── models.py           # ★AI出力契約(Pydantic) + 内部DTO
 │       ├── pipeline.py         # ★オーケストレーション（Lambdaから呼ぶ中核）
 │       ├── cli.py              # ローカル実行: python -m market_report.cli
@@ -133,7 +133,7 @@ Phase 2: HttpChartProvider       → urllib のみ。依存ゼロ・軽量
 |---|---|---|
 | S3 バケット | 静的 HTML / JSON | パブリックアクセスはブロックし、OAC 経由で CloudFront のみ許可 |
 | CloudFront ディストリビューション | 配信 | ACM 証明書は無料（独自ドメイン使用時） |
-| Lambda 関数 | 実行基盤 | メモリ 1024MB / タイムアウト 300s を初期値とする **[推定]** |
+| Lambda 関数 | 実行基盤 | メモリ 1024MB / **タイムアウト 600s**（LLM 実測 153s + 取得 20s に対し 300s では余裕が不足 → [03 §0](03-cost-and-tokens.md)） |
 | EventBridge Scheduler | 定期実行 | `Asia/Tokyo` タイムゾーン指定 |
 | IAM ロール | Lambda 実行ロール | `bedrock-mantle:CreateInference`, `s3:PutObject`, CloudWatch Logs |
 | Secrets Manager | X API 認証情報 | **Phase 3 / prod のみ。** dev には作成しない（投稿事故の構造的防止 → [06 §1-1](06-cicd-and-environments.md)） |

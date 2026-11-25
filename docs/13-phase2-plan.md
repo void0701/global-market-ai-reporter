@@ -1,0 +1,630 @@
+# 13. Phase 2 実行計画と作業分担
+
+最終更新: 2026-11-25 / 状態: **S0 完了**（結果は [06 §8-9](06-cicd-and-environments.md)）
+
+Phase 2（AWS インフラ構築と Lambda 化）の作業を、**誰がやるか**で整理したものです。
+設計の詳細は [06](06-cicd-and-environments.md)、コストは [03](03-cost-and-tokens.md) を参照。
+
+---
+
+## 0. 全体像
+
+```
+S0 権限の検証スパイク  ← 🔴 ここで止まる可能性がある。最初にやる
+   ↓
+S1 bootstrap（state置き場 + OIDC + IAMロール）
+   ↓
+S2 モジュール記述（report_site / pipeline / secrets）
+   ↓
+S3 lambda_handler.py の実装
+   ↓
+S4 dev へデプロイ → スモークテスト
+   ↓
+S5 シークレット投入（prod）
+   ↓
+S6 prod へデプロイ → 本番稼働
+```
+
+**S0 で詰まったら、それ以降は方針判断が必要になります。** 先に進む前に必ず実施してください。
+
+---
+
+## 1. 役割分担（サマリ）
+
+| | ken さん | Claude |
+|---|---|---|
+| **ツール導入** | **awscli（公式インストーラ）← 必須** | terraform（✅ 導入済み） |
+| **AWS 認証** | ローカルから AWS を操作できる状態にする | — |
+| **検証スパイク** | `terraform apply` の実行と結果の共有 | スパイク用 HCL の作成 |
+| **bootstrap** | `terraform apply`（手動・1回） | HCL の作成 |
+| **モジュール記述** | レビュー | 全部 |
+| **Lambda ハンドラ** | レビュー | 全部 |
+| **シークレット投入** | **AWS CLI から手動で投入** | 手順の提示 |
+| **GitHub 設定** | リポジトリ認証 / Environments / ブランチ保護 | ワークフロー YAML の作成 |
+| **コスト上限** | AWS Budgets / Claude Console の設定 | 推奨値の提示 |
+| **判断** | ~~§4 の 3 件~~ ✅ **全件完了**（2026-11-25） | 選択肢と推奨の提示 |
+
+> **原則: 認証情報に触れる操作と、コンソールでの操作は ken さんが行います。**
+> コードと HCL の作成、ローカルでの検証は Claude が行います。
+
+---
+
+## 2. ken さんの作業（チェックリスト）
+
+### 🔴 S0（進行中）
+
+| 作業 | 担当 | 状態 |
+|---|---|---|
+| terraform の導入 | Claude | ✅ **完了**（v1.17.2） |
+| スパイク HCL の作成 | Claude | ✅ **完了**（`infra/spike/` / 17 リソース） |
+| `terraform init` / `validate` / `fmt` | Claude | ✅ **完了**（Success） |
+| **AWS CLI の導入 + `aws login`** | ken さん | ✅ **完了** |
+| Terraform 用の `credential_process` プロファイル | Claude | ✅ **完了**（A-135） |
+| `terraform apply` → 結果確認 → `destroy` | Claude | ✅ **完了。16/17 成功** |
+| CloudFront の代替検証（Amplify） | Claude | ✅ **完了。採用決定**（A-131） |
+
+#### ken さんの作業: AWS 認証情報
+
+**[確認済: AWS 公式ドキュメント / 2026-11-25]**
+
+> ### ⚠️ 新サインアップ体験では静的なアクセスキーを使いません
+>
+> 当初「AWS Settings でアクセスキーを発行」と案内しましたが**誤りでした**。
+> プロジェクト方式では **`aws login` でブラウザ認証し、一時的なプロファイルを得る**
+> 方式です。したがって **AWS CLI が先に必要**です（「S0 に awscli は不要」も誤りでした）。
+
+| 項目 | 内容 |
+|---|---|
+| 認証コマンド | `aws login --profile <名前>` |
+| 有効期間 | **12 時間**（同コマンドで更新） |
+| 再認証なしの期間 | 90 日（以降はブラウザで再許可） |
+| 形式 | `~/.aws/` のプロファイル。`AWS_ACCESS_KEY_ID` を直接扱わない |
+
+**手順**
+
+1. **AWS CLI を入れる**（公式インストーラ。下記「ツール導入の注意」参照）
+2. **AWS Settings**（https://settings.aws.com）→ プロジェクトを選択
+   → 右上 **「Create and manage cloud infrastructure」**
+   → **「Use your AWS credentials with AI coding tools」**
+   → プロファイル名を決める（例: `sandp`）
+3. ログイン
+
+```bash
+aws login --profile sandp
+```
+
+4. 確認
+
+```bash
+AWS_PROFILE=sandp aws sts get-caller-identity
+```
+
+5. Terraform から使う
+
+```bash
+export AWS_PROFILE=sandp
+```
+
+> ### ⚠️ Terraform で使えるかは未検証（スパイクの検証項目に追加）
+>
+> 公式ドキュメントに **「The credentials you generate are for use by the AWS CLI,
+> AWS Tools for PowerShell, and AWS SDKs. External tools may not be supported.」**
+> という注記があります。Terraform は AWS SDK（Go）を使い標準の認証チェーンを読むため
+> **動く見込み**ですが、保証はありません。
+>
+> **動かない場合の代替:** IAM ユーザーを作成しアクセスキーを発行する
+> （IAM は新体験の Free Tier に含まれます）。ただしこの方式が SCP で許可されるかも
+> 未検証なので、その場合はスパイクの検証項目が 1 つ増えます。
+
+### ⚠️ ツール導入の注意（2026-11-25 実機確認）
+
+| ツール | コマンド | 注意 |
+|---|---|---|
+| **terraform** | `brew install hashicorp/tap/terraform` | **`brew install terraform` は失敗します。** HashiCorp のライセンス変更により Homebrew core から外れ、公式 tap に移っています |
+| **awscli** | **公式インストーラを推奨**（下記） | **Homebrew 版は避けてください。** `aws-c-*` 群をソースからビルドするため非常に遅く、実測で 45 分経っても終わりませんでした |
+
+```bash
+curl -o "/tmp/AWSCLIV2.pkg" "https://awscli.amazonaws.com/AWSCLIV2.pkg"
+sudo installer -pkg /tmp/AWSCLIV2.pkg -target /
+```
+
+> **awscli は S0 に必須です。** 新サインアップ体験の認証は `aws login`（AWS CLI のコマンド）
+> で行うため、これなしには Terraform を動かせません。
+
+
+
+> ⚠️ **S0 の結果次第で、以降の計画が変わります。** 拒否された場合は §5 の分岐へ。
+
+### S1 bootstrap（S0 成功後）
+
+- [ ] `infra/bootstrap` で **`terraform apply`**（人間が 1 回だけ実行する設計／[06 §2-4](06-cicd-and-environments.md)）
+  - state 用 S3 バケット + KMS キー 2 個
+  - GitHub OIDC プロバイダ
+  - IAM ロール 3 種（`gha-plan` / `gha-deploy-dev` / `gha-deploy-prod`）
+- [ ] 出力された**ロール ARN を共有**（ワークフロー YAML に埋め込みます）
+
+### S4〜S6 デプロイ
+
+- [ ] **GitHub リポジトリの認証を解決**（現在ブロック中／§3 参照）
+- [ ] **GitHub Environments に `prod` を作成し、必須レビュアーを設定**
+  - これが prod デプロイの承認ゲートになります（[05](05-decisions.md) A-42）
+  - 設定漏れがあっても事故にはならず、デプロイが IAM レベルで失敗するだけです
+- [ ] **`main` ブランチの保護設定**（PR 必須 / 必須ステータスチェック / force push 禁止）
+- [ ] **`ANTHROPIC_API_KEY` を prod の Secrets Manager に手動投入**
+
+```bash
+# 値を一時ファイルに書いて投入し、投入後に必ず削除する
+aws secretsmanager put-secret-value \
+  --secret-id s-and-p-prod-anthropic-api-key \
+  --secret-string file://./key.json
+
+rm key.json
+```
+
+> **なぜ手動か:** Terraform で管理すると **state ファイルに平文で記録されます**
+> （[06 §2-3](06-cicd-and-environments.md)）。GitHub Secrets 経由で Terraform に渡す設計も
+> 同じ問題を抱えます。**人間が 1 回だけ投入するのが最も安全**です。
+> 一時ファイルは**リポジトリ外**に作ってください。
+
+### コスト防御
+
+- [ ] **AWS Budgets** で月 $20 のアラート（AWS 分 $2.80 の約 7 倍）
+- [ ] **Claude Console の使用量上限** を月 $20 程度に設定
+  - ⚠️ **こちらが総額の 73%** です。AWS Budgets だけでは主要部分を監視できません
+
+---
+
+## 3. 現在ブロックされている項目
+
+| 項目 | 状態 | 必要な対応 |
+|---|---|---|
+| **GitHub への push** | ⏳ 認証エラー | キーチェーンに別アカウント（`kenken7171`）の認証情報が残っており、`void0701` の権限がない。`gh auth login` で解決 |
+
+```bash
+brew install gh
+```
+
+```bash
+gh auth login
+```
+
+```bash
+cd /Users/ken/work/s_and_p && git push -u origin main
+```
+
+**コミットはローカルに保全済み**（60ファイル / 9,546行）なので、作業は失われていません。
+
+---
+
+## 4. ✅ Phase 2 の判断（**2026-11-25 すべて確定**）
+
+**ken さんより「全て推奨で問題ない」との回答を得ました。** 以下は経緯の記録で、
+正本は [05](05-decisions.md) A-137〜A-150 です。
+
+| 項目 | 確定 | 決定# |
+|---|---|---|
+| 日次の実行日 | **火〜土** | A-137 |
+| Lambda ランタイム | **Python 3.12** | A-138 |
+| zip のデプロイ | **直接アップロード** | A-139 |
+| dev の API キー | **置かない** | A-140 |
+| 過去レポートの再生成 | **毎朝作り直す** | A-141 |
+| 通知先アドレス | **Terraform に置かず手動購読** | A-143 |
+
+
+### 4-1. Lambda の Python ランタイム
+
+ローカルの Python が **3.12** になりました（Homebrew から 3.14 が消えたため）。
+
+| | 3.12（推奨） | 3.13 |
+|---|---|---|
+| ローカルとの差 | **なし** | あり |
+| 新しさ | 1 世代前 | 最新 |
+
+**推奨: 3.12。** 検証環境と本番環境の差分を減らすほうが、得られる新しさより価値があります。
+
+### 4-2. Lambda zip のデプロイ方法
+
+zip は**実測 6.3MB**（直接アップロード上限 50MB）でした。
+
+| | 直接アップロード（推奨） | S3 経由 |
+|---|---|---|
+| HCL の複雑さ | 単純（`filename` + `source_code_hash`） | S3 バケットとオブジェクトの管理が増える |
+| 50MB 制限 | 余裕（6.3MB） | 制限なし |
+
+**推奨: 直接アップロード。** 当初 S3 経由を選んだ理由（pandas で 50MB を超える懸念）が
+実測で消滅したため（[05](05-decisions.md) A-46 改訂）。
+
+### 4-3. dev 環境に Anthropic API キーを置くか
+
+**推奨: 置かない**（[05](05-decisions.md) A-126）。
+
+- dev の目的は S3 / OAC / IAM / Scheduler の**配線検証**
+- スモークテストは `dry_run: true` で行うため LLM を呼びません
+- 実際の解析品質の検証はローカルで足ります（Phase 1 で実施済み）
+- 「dev はシークレットを持たない」性質が保たれ、コストも $0.40/月 抑えられます
+
+---
+
+## 5. S0 で拒否された場合の分岐
+
+検証スパイクでいずれかの操作が拒否された場合、以下から選びます。
+
+| 選択肢 | 内容 | 代償 |
+|---|---|---|
+| **A. 高度な機能を有効化** | AWS 管理の SCP から解放される | **取り消し不可**／**支出上限を失う**／管理負荷増（[07 §A-0-P](07-prerequisites.md)） |
+| **B. 別アカウントを advanced で作成** | 制約のないアカウントを新規作成。**東京リージョンを選べる** | アカウントが 2 つになる／クレジットが分散 |
+| **C. 拒否された機能を使わない構成に変更** | 例: OIDC が不可なら GitHub Secrets + IAM ユーザー | セキュリティ水準が下がる |
+
+**どれを選ぶかは拒否された内容によります。** 結果を見てから判断しましょう。
+
+---
+
+## 6. Claude が担当する作業
+
+参考までに、こちら側のタスクです。ken さんの作業待ちの間に進められるものには ⏩ を付けています。
+
+| # | 作業 | 状態 |
+|---|---|---|
+| 1 | 検証スパイク用の最小 HCL（`infra/spike/`） | ✅ 完了 |
+| 2 | `lambda_handler.py`（Secrets Manager 取得を含む） | ✅ **完了 2026-11-25** |
+| 3 | `ci.yml`（lint / 型 / テスト / gitleaks / pip-audit） | ✅ **完了 2026-11-25** |
+| 4 | Lambda パッケージのビルドスクリプト | ✅ **完了 2026-11-25** |
+| 5 | `infra/bootstrap/`（state + OIDC + 3 ロール） | ✅ **完了 2026-11-25** |
+| 6 | `infra/modules/site`（S3 + Amplify アプリ） | ✅ **完了 2026-11-25** |
+| 7 | `infra/modules/pipeline`（Lambda + IAM + Scheduler ×4） | ✅ **完了 2026-11-25** |
+| 8 | `infra/modules/secrets`（Secrets Manager + CMK） | ✅ **完了 2026-11-25** |
+| 9 | `infra/envs/{dev,prod}` | ✅ **完了 2026-11-25** |
+| 10 | `deploy-dev.yml` / `deploy-prod.yml` | ✅ **完了 2026-11-25** |
+| 11 | `checkov` を CI に追加 | ✅ **完了 2026-11-25** |
+
+### ✅ 1〜4 の完了内容（2026-11-25）
+
+**AWS を一切呼ばずに実装・検証しました。** 追加・変更したモジュール:
+
+| ファイル | 役割 |
+|---|---|
+| `src/market_report/lambda_handler.py` | エントリポイント。ハンドラ指定は **`market_report.lambda_handler.handler`** |
+| `src/market_report/publishing/s3.py` | `Publisher` の S3 実装。`get_many` で**並列読み込み**（R-5） |
+| `src/market_report/publishing/amplify.py` | サイト全体を zip で置き換えるデプロイヤ（R-3） |
+| `src/market_report/notify.py` | SNS 通知（A-148 の 1 層目） |
+| `src/market_report/pipeline.py` | `build_site()` を分離。**保存済みレコードから全ページを描き直す**（A-141） |
+| `src/market_report/rendering/html.py` | `generated_at` をレコードの値から取る（A-142） |
+| `scripts/build_lambda.sh` | zip ビルド。**TOML 同梱と 50MB 超過を検査して失敗する** |
+| `requirements-lambda.txt` | Lambda に載せる依存を**バージョン固定** |
+| `.github/workflows/ci.yml` | lint / format / mypy / pytest / zip ビルド / gitleaks / pip-audit |
+| `tests/fake_aws.py` | S3 / Amplify / Secrets Manager / SNS のスタブ |
+
+#### ビルド実測
+
+| | 値 | 上限 |
+|---|---|---|
+| 展開後 | **28.6 MB** | 250 MB |
+| zip | **6.2 MB** | 50 MB |
+
+`boto3` / `botocore` が入っていないことを確認済み（ランタイム同梱を使う / A-150）。
+**zip のサイズは以前の実測 6.3MB から変わっていません** — 以前の計測も extra 抜きの
+依存リストで行っていたためです。R-8 の価値はサイズ削減ではなく、
+`pyproject.toml` の `anthropic[bedrock]` を素直にインストールすると
+**28MB 混入する状態を構造的に防いだ**ことにあります。
+
+#### 検証
+
+| 検査 | 結果 |
+|---|---|
+| `ruff check` / `ruff format --check` | ✅ |
+| `mypy src tests` | ✅ **46 files, no issues** |
+| `pytest` | ✅ **82 passed**（Phase 1 時点の 51 から +31） |
+| `pip-audit -r requirements-lambda.txt` | ✅ No known vulnerabilities |
+| zip の中身だけで `import` | ✅ Lambda レイアウトを再現して確認 |
+
+**ハンドラは AWS なしで通ります。** S3 / Amplify / Secrets Manager / SNS を
+スタブに差し替え、3 層の S3 書き込み・サイト全体の配信・SNS 通知・
+シークレット取得を 11 本のテストで押さえています。
+
+> ### GitHub Actions の SHA 固定について
+>
+> A-69 のとおりコミット SHA で固定しました。**SHA は GitHub API で実在を確認
+> してから書いています**（記憶で書くと存在しない SHA になり CI が起動しません）。
+>
+> | Action | バージョン |
+> |---|---|
+> | `actions/checkout` | v7.0.1 |
+> | `actions/setup-python` | v7.1.0 |
+> | `actions/upload-artifact` | v7.0.2 |
+> | `gitleaks/gitleaks-action` | v3.0.0 |
+>
+> `pip-audit` は**環境ではなく `requirements-lambda.txt` を監査**します。
+> 環境を対象にすると editable install の `market-report` が PyPI に無く、
+> `--strict` が常に失敗します（実際に踏みました）。
+
+---
+
+## 8. 🔍 Phase 2 着手前レビュー（2026-11-25 実施）
+
+Phase 2 の設計を、**実際のコードが Lambda で動くか**という観点で再検証しました。
+机上のレビューではなく、Lambda のパッケージ構成を再現した実行と、Amplify の API の
+実機検証を行っています。
+
+### 結果: 🔴 着手前に直すべき 4 件 / 🟡 設計の穴 4 件 / 🔵 確認 4 件
+
+> ### ✅ 進捗（2026-11-25）
+>
+> | # | 状態 |
+> |---|---|
+> | **R-1** 設定の読み込み経路 | ✅ **修正済み。** TOML を `src/market_report/resources/` に同梱し `importlib.resources` で解決。Lambda レイアウトでの読み込みを**回帰テスト化**（`tests/test_config.py`） |
+> | **R-4** mypy 37 件 | ✅ **解消済み。** `mypy src tests` が **Success: no issues found in 37 source files**。`# type: ignore` を 19 個撤去し、うち 1 件は実際の変数衝突バグだった |
+> | **R-8** 依存の整理 | ✅ **修正済み。** `pydantic-settings` を削除、`anthropic[bedrock]` を `bedrock` extra へ分離 |
+> | **R-2** Lambda の読み取り権限 | ✅ **ハンドラ側は実装済み。** `S3Publisher` が読み書き両方を持つ。IAM への反映は `infra/modules/pipeline` で行う |
+> | **R-3** Amplify の全置き換え | ✅ **実装済み。** `build_site()` で全ページを描き直し、zip 1 本で送る |
+> | **R-5** 逐次 S3 GET | ✅ **実装済み。** `S3Publisher.get_many()` で並列化（既定 16 並列） |
+> | **R-6** 失敗通知の検知 | ✅ **1 層目を実装済み。** ハンドラが捕捉して SNS に送り、再送出して `Errors` を立てる。2 層目のアラームは Terraform 側 |
+> | R-9 / R-12 | 未着手 |
+>
+> **検証:** `ruff check` ✅ / `ruff format` ✅ / `pytest` ✅ **57 passed**（+6）/ `mypy src tests` ✅
+> 日次・週次の `--dry-run` を実データで通して回帰がないことを確認済み。
+
+---
+
+### ✅ R-1. `load_settings()` は Lambda のレイアウトで必ず失敗する → **修正済み 2026-11-25**
+
+**[確認済: 実機で再現 2026-11-25]**
+
+`config.py` の `_project_root()` は `Path(__file__).resolve().parents[2]` です。
+Lambda のパッケージ展開先は `/var/task/market_report/` なので `parents[2]` は **`/var`**
+になり、`/var/config/settings.toml` を探して落ちます。
+
+```
+project_root -> .../lamsim/var
+FileNotFoundError: 設定ファイルが見つかりません: .../lamsim/var/config/settings.toml
+```
+
+さらに `pyproject.toml` の `package-data` は `rendering/templates/*.j2` のみで、
+**`config/*.toml` は zip に入りません**。
+
+**対策（推奨）:** TOML をパッケージ内（`src/market_report/config/`）に移し、
+`importlib.resources` で解決する。`_project_root()` に依存しなくなり、
+ローカルと Lambda で経路が一致します。
+
+### 🔴 R-2. Lambda の IAM に**読み取り権限が無い**
+
+[06 §3-0](06-cicd-and-environments.md) の権限表は `s3:PutObject` だけですが、
+`run_daily` は最後に `rebuild_index` を呼びます（`pipeline.py:160`）。これは
+**過去の全日次レコードを S3 から読みます**（`list_keys` + `get_text`）。
+現在の設計のままだと、初日は通っても 2 日目以降に `AccessDenied` で落ちます。
+
+| 追加が必要な権限 | 理由 |
+|---|---|
+| `s3:GetObject` / `s3:ListBucket` | `rebuild_index` / `run_period` の読み取り（上記） |
+| `amplify:CreateDeployment` / `StartDeployment` / `GetJob` | 配信（§9 で決定済みだが §3-0 の表に未反映） |
+| `sns:Publish` | 失敗通知（A-53）。R-6 参照 |
+| `logs:CreateLogGroup` | ロググループを Terraform で先に作るなら不要 |
+
+### 🔴 R-3. Amplify の手動デプロイは**サイト全体の置き換え**
+
+**[確認済: 実機検証 2026-11-25]**
+
+`--file-map` に載せたが**アップロードしなかったファイルは消えます**。
+md5 は「変更なしなので据え置き」の印にはなりません。
+
+```
+file-map に 3 件を宣言 → index.html のみ PUT → start-deployment
+  /                200  （更新された）
+  /reports/a.html  301 → 404  ★消えた
+  /reports/b.html  301 → 404  ★消えた
+```
+
+zip でサイト全体を送れば復旧しました。つまり **毎朝、全レポートを含む zip を作る**
+必要があります。
+
+**対策（推奨）:** 日次データから**全レポートを毎回レンダリングして 1 つの zip を送る**。
+`rebuild_index` がすでに全日次レコードを読んでいるため、レンダリングの追加コストは
+CPU だけ（Jinja2 で 1 件 1ms 程度）です。副産物として**テンプレート変更が過去分にも
+反映される**という利点もあります。
+
+| 実測 | 値 |
+|---|---|
+| HTML 96KB → zip | **33KB（約 3 倍圧縮）** |
+| 1 年分（約 260 本）の見込み | HTML 7.7MB → **zip 約 2.6MB** |
+| 5 年分 | HTML 38MB → **zip 約 13MB** |
+
+サイズは問題になりません。
+
+### ✅ R-4. `ci.yml` に mypy を入れると初日から赤になる → **解消済み 2026-11-25**
+
+**[確認済: 実行 2026-11-25]**
+
+| チェック | 結果 |
+|---|---|
+| `ruff check` | ✅ All checks passed |
+| `ruff format --check` | ✅ 36 files already formatted |
+| `pytest` | ✅ 51 passed |
+| **`mypy src`** | ❌ **37 errors in 8 files** |
+
+内訳は `unused-ignore` 13 件（`warn_unused_ignores = true` のため不要な
+`# type: ignore` が検出されたもの・機械的に削除可）と、実質的な型エラー 24 件です。
+`pipeline.py` 15 件 / `fixtures.py` 11 件 / `cli.py` 5 件。
+
+**[06 §4-4](06-cicd-and-environments.md) は `ci.yml` に mypy を含める設計**なので、
+**ワークフローを書く前に解消が必要**です。
+
+#### 実施内容（2026-11-25）
+
+`# type: ignore` を貼って黙らせるのではなく、**型が合うようにコードを直しました**。
+
+| 対象 | 原因 | 対処 |
+|---|---|---|
+| `fixtures.py` 11 件 | ドライラン用の定数が素の `str` タプル | `models` の `Literal` 別名で注釈。**綴り間違いが型エラーになる**ので安全性が上がった |
+| `pipeline.py` 13 件 | `for ptype in ("weekly", ...)` が `str` に推論され、`PeriodType` キーの dict に使えなかった | `PERIOD_TYPES: tuple[PeriodType, ...]` を定義。**ignore 13 個が全部消えた** |
+| `pipeline.py` 1 件 | **代入式（`:=`）の変数が関数スコープに漏れ**、日次用の `r` と期間用の `r` が衝突していた | 期間側を `rec` に改名。ignore が隠していた実バグ |
+| `cli.py` 4 件 | 同一関数で `record` を `DailyRecord` と `PeriodRecord` に使い回し | 期間側を `period` に改名 |
+| `rss.py` 1 件 | `datetime(*tm[:6], tzinfo=UTC)` は `tm` の長さが不定だと `tzinfo` が二重指定になりうる | 6 要素に明示的に展開 |
+| `market.py` 1 件 | `rows` が `list[Quote]` と `list[Quote] | None` で衝突 | 後者を `history` に改名 |
+| `aggregate.py` 2 件 | `None` 除外が内包表記の条件側にあり narrowing が効かない | 代入式に変更。**ignore のコード指定自体が間違っていた**（`assignment` が漏れていた） |
+| `analyzer.py` 2 件 / `doctor.py` 1 件 | 分岐で別の型を同じ変数に入れていた | 変数を分離 / `Any` で受ける |
+| テスト側 7 件 | 同様の `Literal` と不要 `ignore` | 同様に修正。**CI は `mypy src tests` で両方を検査する** |
+
+---
+
+### 🟡 R-5. `rebuild_index` は S3 GET が日数に比例する
+
+アーカイブ 1 行に必要なのは 4 項目（日付・スコア・要約 70 字・騰落率）だけですが、
+**1 日あたり 36KB の JSON を全件・逐次で読んでいます**。5 年後は 1,300 回の逐次 GET です。
+
+ただし R-3 により**全日次レコードは結局必要**なので、軽量マニフェストを別に持つ意味は
+薄いです。**`ThreadPoolExecutor` で並列化する**のが正解で、`rss.py` に同じ実装パターンが
+すでにあります。
+
+### 🟡 R-6. 失敗通知の「検知方法」が決まっていない
+
+A-53 で「SNS → メール」は決まっていますが、**何が失敗を検知するか**が未設計です。
+2 層に分けるのを推奨します。
+
+| 層 | 対象 |
+|---|---|
+| ハンドラ内の `try`/`except` → `sns:Publish` | 業務エラー（全フィード失敗、LLM エラー等）。原因を本文に書ける |
+| CloudWatch アラーム（`Errors` メトリクス）→ SNS | ハンドラに到達しない異常（タイムアウト、OOM、import 失敗） |
+
+前者だけでは**タイムアウトが無通知**になります。
+
+### 🟡 R-7. AWS プロバイダ 5.x は Amplify のスロットリングで**無言で止まる**
+
+**[確認済: 実機検証 2026-11-25]**
+
+`aws_amplify_app` の作成で、プロバイダ 5.100.0 は **14 分間ハング**しました
+（出力なし・CPU 1.5 秒＝待機のみ）。6.74.0 に上げると原因が即座に出ました。
+
+```
+BadRequestException: Rate exceeded while calling CreateApp, please slow down or try again later.
+```
+
+5.x が内部でリトライを続け、何も表示しないまま待っていたということです。
+
+**対策:** `required_providers` を **`~> 6.0` に固定**する（[06 §2-5](06-cicd-and-environments.md)
+は `~> 5.0` なので要改訂）。あわせて **Amplify の `CreateApp` はレート上限が厳しい**点に
+注意が必要です。dev / prod の 2 個を作るだけなら問題になりませんが、
+**`terraform destroy` → `apply` を繰り返す検証はスロットリングされます**。
+
+### ✅ R-8. Lambda の依存に無駄がある → **修正済み 2026-11-25**
+
+| 項目 | 現状 | 対策 |
+|---|---|---|
+| `anthropic[bedrock]` | botocore 27MB + boto3 1.4MB を引き込む | **Lambda 用は `anthropic`（extra なし）**。boto3 はランタイムに同梱済み |
+| `pydantic-settings` | **コード中で未使用**（`grep` で参照 0 件） | 依存から削除 |
+
+---
+
+### 🔵 R-9. 07:00 JST は冬時間だと米国の引けから 1 時間しかない
+
+07:00 JST = 17:00 EST（前日）/ 18:00 EDT（前日）。夏時間は引けから 2 時間ありますが、
+**冬時間は 1 時間**です。今日の実行は 14:11 JST で完全なデータが取れましたが、
+07:00 時点での可用性は未確認です。
+
+**対策:** 本番切り替え前に、**07:00 JST にローカルで 1 回実行**して
+`fetch_errors` と `reference_date` を確認する。費用は $0.24、AWS 不要です。
+
+### 🔵 R-10. ✅ `customRules` は不要（§9 の残課題 #3 を解消）
+
+存在しないパスは **301 を 1 回経て 404** で終わりました。Amplify の既定の
+pretty-URL 挙動です。追加設定は要りません。
+
+```
+/nope.html → 301 /nope/ → 404
+```
+
+### 🔵 R-11. 着手前の未決は 3 件ではなく **5 件**
+
+§4 の 3 件に加え、[00 §B](00-open-items.md) の 2 件も Phase 2 開始前の判断です。
+
+| # | 項目 | 推奨 |
+|---|---|---|
+| B-1 | 日次を「火〜土」にするか | **する**（空振り週 2 回を排除。[09 §2](09-periodic-reports.md)） |
+| B-2 | 失敗通知のメールアドレス | **ken さんの決定が必要**（技術的推奨なし） |
+
+**B-2 だけは推奨を出せません。** SNS サブスクリプションに必要なので、
+`infra/` を書く前に決めてください。
+
+### 🔵 R-12. ドキュメントに CloudFront の記述が約 25 箇所残っている
+
+§9 で Amplify に決めましたが、反映は `06` と `05` と `13` だけです。
+`00` / `01` / `03` / `04` / `07` / `README` に旧記述が残っており、
+**実装時に誤った設計を参照する危険があります**。R-2 の権限表もこの一部です。
+
+---
+
+### レビューを踏まえた作業順の修正
+
+```
+R-1 設定の読み込み経路を修正      ← 🔴 これなしに Lambda は動かない
+R-4 mypy を解消                   ← 🔴 これなしに ci.yml が書けない
+R-8 依存の整理                    ← 🔴 ビルドスクリプトの前提
+   ↓
+lambda_handler.py（R-2 R-3 R-6 を織り込む）
+ci.yml / ビルドスクリプト
+   ↓
+R-12 ドキュメントの配信層を一括更新
+   ↓
+infra/bootstrap → modules → envs（プロバイダ `~> 6.0`）
+```
+
+**R-1 / R-4 / R-8 はすべて AWS 不要**です。先に片付けると、
+Lambda ハンドラを書いた時点で「ローカルで Lambda と同じ経路を通る」状態になります。
+
+### ✅ 5〜11 の完了内容（2026-11-25）
+
+```
+infra/
+├── bootstrap/        state バケット + KMS ×2 + OIDC + IAM ロール ×3   … 17 リソース
+├── modules/
+│   ├── site/         S3（非公開）+ Amplify アプリ / ブランチ
+│   ├── pipeline/     Lambda + IAM + Scheduler ×4 + SNS + アラーム + Budgets
+│   └── secrets/      Secrets Manager の容器のみ（値は手動投入）
+└── envs/
+    ├── dev/          Scheduler 無効 / シークレットなし / ログ 7 日   … 21 リソース
+    └── prod/         Scheduler 有効 / シークレットあり / ログ 30 日  … 24 リソース
+```
+
+#### `terraform plan` を実際に通しました
+
+`validate` では provider 側の属性検証が走らないため、**実際の AWS に対して
+plan を実行**しました（読み取りのみ・何も作っていません）。
+
+| 対象 | 結果 |
+|---|---|
+| `infra/bootstrap` | ✅ **Plan: 17 to add** |
+| `infra/envs/dev` | ✅ **Plan: 21 to add** |
+| `infra/envs/prod` | ✅ **Plan: 24 to add** |
+| `terraform fmt -check -recursive infra` | ✅ |
+| `checkov` | ✅ **135 passed / 0 failed** |
+
+#### checkov の 21 件の指摘に対して
+
+**機械的に黙らせていません。** 直す価値があるものは直しました（A-159）。
+
+| 指摘 | 対応 |
+|---|---|
+| `CKV_AWS_50` X-Ray 無効 | ✅ **有効にした。** 150 秒の処理の内訳が見える。月 30 回では無料枠内（A-162） |
+| `CKV_AWS_116` Lambda に DLQ がない | ✅ **SNS を DLQ にした。** Scheduler は非同期呼び出しなので、リトライを使い切るとハンドラの `try`/`except` に到達しない。既存の通知トピックを再利用（A-161） |
+| 残り 13 種 | 理由を 1 件ずつ `.checkov.yaml` に記載して除外。VPC（NAT 費用のみ増える）、環境変数の CMK（**そもそも秘密情報を置かない**）、シークレットの自動ローテーション（**Claude API キーは非対応**）など、既に設計で評価済みのもの |
+
+#### 実装中に見つけて直したこと
+
+| | |
+|---|---|
+| **`build_site()` が 1 回の実行で 2 回走っていた** | `run_daily` 内の `rebuild_index` と配信の両方が全レコードを読んでいた。`publish_index=False` で 1 回に集約（A-160）。テストで呼び出し回数を固定 |
+| **CI の `plan` がロックを取れない** | `gha-plan` は state を読むだけで書けないため、S3 ネイティブロックの取得に失敗する。`-lock=false` を指定（A-163） |
+| **prod の変数が CI から読めない** | `terraform.tfvars` は `.gitignore` 済み。Repository variables から `TF_VAR_*` で渡す（A-164） |
+| **Amplify の `custom_rule`** | 一度 SPA フォールバックを書いたが、**404 が 200 になり R-10 で検証した挙動を壊す**ため削除した |
+
+---
+
+## 7. 完了条件
+
+- [ ] 毎朝 07:00 JST（火〜土）に日次レポートが自動生成される
+- [ ] 月曜 07:00 JST に週次レポートが生成される
+- [ ] 毎月 1 日・毎年 1 月 1 日に月次 / 年次が生成される
+- [ ] **Amplify** の URL でレポートが閲覧できる
+- [ ] 失敗時にメール通知が届く
+- [ ] `main` への push で dev に自動デプロイされる
+- [ ] prod デプロイに承認ゲートが効いている
+- [ ] CI（lint / テスト / checkov / gitleaks）が通っている
+- [ ] コスト上限が AWS と Claude Console の両方に設定されている
