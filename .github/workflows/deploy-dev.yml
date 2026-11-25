@@ -1,0 +1,90 @@
+# main への push で dev へ自動デプロイ（docs/06 §4-4）。
+#
+# dev は配線の検証用。シークレットを持たないため、スモークテストは
+# `dry_run: true` で行い LLM を呼ばない（課金なし / A-140）。
+name: Deploy dev
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # OIDC トークンの発行に必要（これだけで AWS を使える）
+
+concurrency:
+  # 同時 apply による state 破壊を防ぐ
+  group: deploy-dev
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ap-southeast-2
+  # bootstrap が出力するロール ARN。アカウント ID は backend.tf にも
+  # 現れるため、ここで隠しても意味がない（AWS 公式もアカウント ID を
+  # 秘密情報とは位置づけていない）
+  ROLE_ARN: arn:aws:iam::768756481546:role/s-and-p-gha-deploy-dev
+
+jobs:
+  deploy:
+    name: dev へ apply
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Lambda zip のビルド
+        run: ./scripts/build_lambda.sh
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ env.ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.17.2
+          # plan/apply の出力を素のまま読みたいのでラッパーを外す
+          terraform_wrapper: false
+
+      - name: terraform init
+        working-directory: infra/envs/dev
+        run: terraform init -input=false
+
+      - name: terraform apply
+        working-directory: infra/envs/dev
+        run: terraform apply -input=false -auto-approve
+
+      - name: スモークテスト（dry_run。LLM は呼ばない）
+        working-directory: infra/envs/dev
+        run: |
+          FN=$(terraform output -raw function_name)
+          aws lambda invoke \
+            --function-name "$FN" \
+            --payload '{"report_type":"daily","dry_run":true}' \
+            --cli-binary-format raw-in-base64-out \
+            --cli-read-timeout 700 \
+            response.json > invoke.json
+
+          echo "--- invoke ---"; cat invoke.json
+          echo "--- response ---"; cat response.json
+
+          # FunctionError が付いていたらハンドラ内で例外が出ている
+          if grep -q FunctionError invoke.json; then
+            echo "::error::Lambda がエラーを返しました"
+            exit 1
+          fi
+          python3 -c "
+          import json, sys
+          body = json.load(open('response.json'))
+          if not body.get('ok'):
+              sys.exit(f'想定外のレスポンス: {body}')
+          print('OK:', body.get('report'), body.get('date') or body.get('label'))
+          "
+
+      - name: 公開 URL
+        working-directory: infra/envs/dev
+        run: echo "::notice::$(terraform output -raw site_url)"

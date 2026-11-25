@@ -1,0 +1,177 @@
+# PR と main への push で走る検査（docs/06 §4-4, §4-6）。
+#
+# サードパーティ Action は**コミット SHA で固定**する（A-69）。タグは後から
+# 書き換えられるため、タグ指定ではサプライチェーン攻撃を防げない。
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# 既定を読み取りだけにする。必要な権限は各ジョブで足す
+permissions:
+  contents: read
+
+concurrency:
+  # 同じブランチへの連続 push では古い実行を打ち切る
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: lint / 型 / テスト
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          # Lambda ランタイムと揃える（A-138）
+          python-version: "3.12"
+          cache: pip
+
+      - name: 依存のインストール
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: ruff check
+        run: ruff check src tests
+
+      - name: ruff format
+        run: ruff format --check src tests
+
+      - name: mypy
+        # src だけでなく tests も検査する。ドライラン用フィクスチャが
+        # スキーマからずれるのを型で止めるため（docs/13 §8 R-4）
+        run: mypy src tests
+
+      - name: pytest
+        # LLM は呼ばない（ドライラン + スタブ）ので課金は発生しない
+        run: pytest -q
+
+      - name: Lambda zip のビルド
+        # 50MB 超過と、設定 TOML の同梱漏れ（R-1）をここで検出する
+        run: ./scripts/build_lambda.sh
+
+      - name: zip を成果物として保存
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lambda-zip
+          path: build/lambda.zip
+          retention-days: 7
+
+  security:
+    name: シークレット / 脆弱性
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # gitleaks は履歴全体を走査する。浅いクローンでは過去の漏洩を見逃す
+          fetch-depth: 0
+
+      - name: gitleaks（コミットに混入した秘密情報）
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 個人の public リポジトリではライセンス不要。Organization に
+          # 移す場合は GITLEAKS_LICENSE が必要になる
+          # GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: pip-audit（Lambda に載る依存の既知脆弱性）
+        # 環境ではなく requirements-lambda.txt を監査する。本番に実際に
+        # 載るものだけを見たいため。環境を監査すると editable install の
+        # market-report が PyPI に無く --strict が必ず失敗する
+        run: |
+          python -m pip install --upgrade pip pip-audit
+          pip-audit --strict --desc -r requirements-lambda.txt
+
+      - name: pip-audit（開発依存。失敗させない）
+        continue-on-error: true
+        run: |
+          pip install -e ".[dev]"
+          pip-audit --desc --skip-editable
+
+  iac:
+    name: Terraform / checkov
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # plan のために AWS を読む
+    env:
+      AWS_REGION: ap-southeast-2
+      # 読み取り専用ロール。state も読むだけで書けない
+      ROLE_ARN: arn:aws:iam::768756481546:role/s-and-p-gha-plan
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.17.2
+          terraform_wrapper: false
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive infra
+
+      - name: terraform validate（全ディレクトリ）
+        run: |
+          for d in infra/bootstrap infra/modules/* infra/envs/*; do
+            [ -f "$d/main.tf" ] || continue
+            echo "--- $d ---"
+            terraform -chdir="$d" init -backend=false -input=false >/dev/null
+            terraform -chdir="$d" validate
+          done
+
+      - name: checkov（IaC の設定ミス検出 / A-66）
+        # 除外する指摘とその理由は .checkov.yaml に 1 件ずつ書いてある。
+        # ワークフローに並べると理由が失われるため設定ファイルに寄せた
+        uses: bridgecrewio/checkov-action@b782b35c8411ff565b881fba67ceebdb426d7dc4 # v12.3147.0
+        with:
+          config_file: .checkov.yaml
+          output_format: cli
+          soft_fail: false
+
+  terraform-plan:
+    name: terraform plan (dev)
+    runs-on: ubuntu-latest
+    # フォークからの PR には OIDC トークンが発行されないためスキップする。
+    # `pull_request_target` は使わない（フォークの変更を権限付きで実行して
+    # しまい危険 / docs/06 §4-4）
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ap-southeast-2
+      ROLE_ARN: arn:aws:iam::768756481546:role/s-and-p-gha-plan
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Lambda zip のビルド
+        # envs/dev が filebase64sha256 で zip を参照するため plan 前に必要
+        run: ./scripts/build_lambda.sh
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ env.ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.17.2
+          terraform_wrapper: false
+
+      - name: terraform plan
+        working-directory: infra/envs/dev
+        run: |
+          terraform init -input=false
+          # gha-plan は state に書けないのでロックを取らない
+          terraform plan -input=false -lock=false

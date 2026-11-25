@@ -1,0 +1,100 @@
+# prod へのデプロイ（docs/06 §4-4）。
+#
+# **自動デプロイしない。** `environment: prod` に必須レビュアーを設定すると、
+# ここで人間の承認待ちになる（A-42）。1 日 1 回のバッチなのでデプロイ頻度を
+# 上げる必要がなく、安全側に倒す。
+#
+# 承認ゲートは IAM でも二重化してある: prod ロールの信頼ポリシーは
+# `sub = repo:<repo>:environment:prod` に完全一致でのみ引き受けを許すため、
+# Environments を経由しないワークフローはそもそも認証できない。
+name: Deploy prod
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ap-southeast-2
+  ROLE_ARN: arn:aws:iam::768756481546:role/s-and-p-gha-deploy-prod
+
+  # prod の変数は terraform.tfvars に書かない（.gitignore 済み / A-145）。
+  # **GitHub の Repository variables に設定する**（Secrets ではない。
+  # どちらも機密ではなく、ログに出ても害がない値）:
+  #   SECRETS_KMS_KEY_ARN  … bootstrap の出力 secrets_kms_key_arn
+  #   ADMIN_PRINCIPAL_ARN  … シークレットを手動投入する人のプリンシパル ARN
+  TF_VAR_secrets_kms_key_arn: ${{ vars.SECRETS_KMS_KEY_ARN }}
+  TF_VAR_admin_principal_arn: ${{ vars.ADMIN_PRINCIPAL_ARN }}
+
+jobs:
+  deploy:
+    name: prod へ apply
+    runs-on: ubuntu-latest
+    # ★ここで必須レビュアーの承認が入る
+    environment: prod
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Lambda zip のビルド
+        run: ./scripts/build_lambda.sh
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ env.ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.17.2
+          terraform_wrapper: false
+
+      - name: 必要な変数が設定されているか確認
+        run: |
+          : "${TF_VAR_secrets_kms_key_arn:?Repository variable SECRETS_KMS_KEY_ARN が未設定です}"
+          : "${TF_VAR_admin_principal_arn:?Repository variable ADMIN_PRINCIPAL_ARN が未設定です}"
+          echo "OK"
+
+      - name: terraform init
+        working-directory: infra/envs/prod
+        run: terraform init -input=false
+
+      - name: terraform plan（ログに残す）
+        working-directory: infra/envs/prod
+        run: terraform plan -input=false -out=tfplan
+
+      - name: terraform apply
+        working-directory: infra/envs/prod
+        run: terraform apply -input=false tfplan
+
+      - name: スモークテスト（dry_run。LLM は呼ばない）
+        working-directory: infra/envs/prod
+        run: |
+          FN=$(terraform output -raw function_name)
+          aws lambda invoke \
+            --function-name "$FN" \
+            --payload '{"report_type":"daily","dry_run":true}' \
+            --cli-binary-format raw-in-base64-out \
+            --cli-read-timeout 700 \
+            response.json > invoke.json
+
+          echo "--- invoke ---"; cat invoke.json
+          if grep -q FunctionError invoke.json; then
+            echo "::error::Lambda がエラーを返しました"
+            exit 1
+          fi
+
+      - name: 公開 URL
+        working-directory: infra/envs/prod
+        run: echo "::notice::$(terraform output -raw site_url)"

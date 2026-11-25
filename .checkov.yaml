@@ -1,0 +1,68 @@
+# checkov の設定（docs/05 A-66 / A-159）。
+#
+# **指摘を機械的に全部黙らせない方針。** 直す価値があるものは直し、
+# 外すものは 1 件ずつ理由を書く。X-Ray（CKV_AWS_50）と Lambda の DLQ
+# （CKV_AWS_116）は指摘を受けて実際に追加した。
+directory:
+  - infra
+framework:
+  - terraform
+# スパイクは「何を検証したか」の記録として残しているだけで apply しない
+skip-path:
+  - infra/spike
+compact: true
+quiet: true
+
+skip-check:
+  # ---- 設計判断として外すもの ----
+
+  # S3 のアクセスログ: 公開レポートと公開ニュースのみを置くバケットで、
+  # ログ保管バケットを増やす価値がない
+  - CKV_AWS_18
+  # S3 のクロスリージョン複製: 新サインアップ体験では非対応（A-120）
+  - CKV_AWS_144
+  # S3 を CMK で暗号化: CMK は state と secrets に限る方針（A-65）。
+  # 公開前提のデータに月 $1 のキーを足す価値がない
+  - CKV_AWS_145
+  # S3 のイベント通知: 使っていない
+  - CKV2_AWS_62
+  # Lambda を VPC に入れる: プライベートリソースへアクセスしないため、
+  # VPC に入れると NAT の費用が増えるだけ（docs/06 §3-3）
+  - CKV_AWS_117
+  # Lambda 環境変数の CMK 暗号化: **環境変数に秘密情報を置かない設計**
+  # （docs/06 §3-0）。入っているのはバケット名とモデル ID だけ
+  - CKV_AWS_173
+  # Lambda のコード署名: 署名プロファイルの運用が増える。単一開発者の
+  # プロジェクトで、zip は CI が OIDC 経由でのみ更新する
+  - CKV_AWS_272
+  # CloudWatch Logs の CMK 暗号化: ログに出すのは構造化フィールドのみ
+  # （プロンプト全文は S3 の raw/llm/ に置く）。CMK 1 個 $1/月は
+  # AWS 分の想定 $2.80/月 に対して割に合わない
+  - CKV_AWS_158
+  # Scheduler の CMK: ペイロードは {"report_type":"daily"} のみ
+  - CKV_AWS_297
+  # ログ保持 1 年以上: prod 30 日 / dev 7 日と決めている（docs/06 §3-3）。
+  # 再解析に必要な生データは S3 に全件保持しており、ログは運用調査用
+  - CKV_AWS_338
+  # Secrets Manager の自動ローテーション: **Claude API キーは自動
+  # ローテーションに対応していない**。手動手順として文書化し年 1 回
+  # 実施する（docs/06 §3-2 で明示的に評価済み）
+  - CKV2_AWS_57
+  # KMS キーポリシーの明示: 既定ポリシー（アカウント root に全権）+
+  # IAM による制御が AWS 推奨の基本形。独自ポリシーを書き損なうと
+  # **キーに永久にアクセスできなくなる**リスクがあり、得るものより大きい
+  - CKV2_AWS_64
+
+  # ---- CI デプロイロールに対する指摘（bootstrap） ----
+  # 以下は infra/bootstrap の gha-deploy-* ロールに出る。Terraform で
+  # インフラを作るロールは、作成対象のサービスに対して広い権限を必要と
+  # するため構造的に避けられない。代わりに以下で絞っている:
+  #   - state は環境ごとのプレフィックスのみ書き込み可
+  #   - secrets 用 CMK を渡さない（CI は API キーを復号できない）
+  #   - GetSecretValue / PutSecretValue を明示的に Deny
+  #   - 信頼ポリシーは aud / sub を StringEquals で完全一致
+  - CKV_AWS_108
+  - CKV_AWS_109
+  - CKV_AWS_110
+  - CKV_AWS_111
+  - CKV_AWS_356

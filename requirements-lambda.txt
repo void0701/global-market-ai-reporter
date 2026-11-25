@@ -1,0 +1,14 @@
+# Lambda デプロイパッケージの依存（docs/05 A-150）。
+#
+# - `anthropic` は extra なし。`[bedrock]` が引き込む boto3/botocore は
+#   Lambda ランタイムに同梱されており、zip に入れると 28MB 無駄になる。
+# - バージョンは固定する。Lambda の zip は再現可能であるべきで、
+#   CI とローカルでビルド結果が揺れると原因究明ができない。
+#
+# 更新手順: ローカルの .venv を更新 → `pip list --format=freeze` の値を転記
+#           → `scripts/build_lambda.sh` でサイズ確認 → dev にデプロイして確認
+
+anthropic==2.13.0
+feedparser==6.0.14
+Jinja2==3.1.6
+pydantic==2.14.4
