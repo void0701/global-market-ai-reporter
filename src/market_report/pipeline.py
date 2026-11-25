@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from . import DAILY_SCHEMA_VERSION, RAW_SCHEMA_VERSION
 from .analysis import aggregate
@@ -36,6 +37,13 @@ from .utils import logging as log
 logger = logging.getLogger(__name__)
 
 SPX = "^GSPC"
+
+# 明示しないとループ変数が str に推論され、PeriodType キーの dict に使えない
+PERIOD_TYPES: tuple[PeriodType, ...] = ("weekly", "monthly", "yearly")
+LATEST_PERIOD_PAGES: tuple[tuple[PeriodType, str], ...] = (
+    ("weekly", "weekly.html"),
+    ("monthly", "monthly.html"),
+)
 
 
 def default_publisher(settings: Settings) -> Publisher:
@@ -89,6 +97,7 @@ def run_daily(
     dry_run: bool = False,
     publisher: Publisher | None = None,
     provider: market_mod.MarketDataProvider | None = None,
+    publish_index: bool = True,
 ) -> DailyRecord:
     target = target_date or datetime.now().astimezone().date()
     pub = publisher or default_publisher(settings)
@@ -157,7 +166,10 @@ def run_daily(
     # 7. HTML
     renderer = Renderer(settings)
     pub.put_text(store.report_key(target), renderer.daily(record, rel="../"))
-    rebuild_index(settings, pub)
+    # Lambda では配信側が build_site() を 1 回呼んで両方こなすため、
+    # ここでは呼ばない（同じ全件読み込みを 2 回したくない / A-160）
+    if publish_index:
+        rebuild_index(settings, pub)
 
     log.info(
         logger,
@@ -214,6 +226,7 @@ def run_period(
     target_date: date | None = None,
     dry_run: bool = False,
     publisher: Publisher | None = None,
+    publish_index: bool = True,
 ) -> PeriodRecord:
     pub = publisher or default_publisher(settings)
     target = target_date or datetime.now().astimezone().date()
@@ -290,7 +303,10 @@ def run_period(
     pub.put_text(
         store.period_report_key(period_type, period_label), renderer.period(record, rel="../")
     )
-    rebuild_index(settings, pub)
+    # Lambda では配信側が build_site() を 1 回呼んで両方こなすため、
+    # ここでは呼ばない（同じ全件読み込みを 2 回したくない / A-160）
+    if publish_index:
+        rebuild_index(settings, pub)
 
     log.info(
         logger,
@@ -340,66 +356,105 @@ def _period_item(record: PeriodRecord) -> dict:
     }
 
 
-def rebuild_index(settings: Settings, publisher: Publisher) -> None:
-    """``index.html`` / ``weekly.html`` / ``monthly.html`` / ``archive.html`` を更新する.
+def build_site(settings: Settings, publisher: Publisher) -> dict[str, str]:
+    """公開サイト全体を ``{キー: HTML}`` で組み立てる.
 
-    生成失敗時に ``index.html`` を上書きしない方針（docs/05 A-54）のため、
-    この関数はレポートが 1 本も無ければ何もしない。
+    **保存済みのレコードから毎回すべて描き直す**（docs/05 A-141）。Amplify の
+    手動デプロイはサイト全体の置き換えであり、毎回全ページが必要になるため
+    （docs/13 §8 R-3）。レコードの読み込みはどうせ全件必要なので、HTML を
+    S3 から読み直すより再描画するほうが要求数が少ない。
+
+    レポートが 1 本も無ければ空の dict を返す。生成失敗時に ``index.html`` を
+    壊さない方針（docs/05 A-54）はこれで保たれる。
     """
     renderer = Renderer(settings)
 
     dates = store.list_daily_dates(publisher)
-    daily_records = [r for d in dates if (r := store.load_daily(publisher, d))]
+    daily_records = store.load_daily_many(publisher, dates)
 
     period_records: dict[PeriodType, list[PeriodRecord]] = {}
-    for ptype in ("weekly", "monthly", "yearly"):
-        labels = store.list_period_labels(publisher, ptype)  # type: ignore[arg-type]
-        period_records[ptype] = [  # type: ignore[index]
-            r
-            for label in labels
-            if (r := store.load_period(publisher, ptype, label)) is not None  # type: ignore[arg-type]
-        ]
+    for ptype in PERIOD_TYPES:
+        labels = store.list_period_labels(publisher, ptype)
+        period_records[ptype] = store.load_period_many(publisher, ptype, labels)
 
-    # 最新ページ（root に置くので rel="")
-    if daily_records:
-        publisher.put_text("index.html", renderer.daily(daily_records[-1], rel=""))
-    for ptype, filename in (("weekly", "weekly.html"), ("monthly", "monthly.html")):
-        records = period_records[ptype]  # type: ignore[index]
+    if not daily_records:
+        return {}
+
+    pages: dict[str, str] = {}
+
+    # 個別ページ（サブディレクトリに置くので rel=".."）
+    for record in daily_records:
+        key = store.report_key(date.fromisoformat(record.date))
+        pages[key] = renderer.daily(record, rel="..")
+    for ptype in PERIOD_TYPES:
+        for period in period_records[ptype]:
+            key = store.period_report_key(ptype, period.period_label)
+            pages[key] = renderer.period(period, rel="..")
+
+    # 最新ページ（root に置くので rel=""）
+    pages["index.html"] = renderer.daily(daily_records[-1], rel="")
+    for ptype, filename in LATEST_PERIOD_PAGES:
+        records = period_records[ptype]
         if records:
-            publisher.put_text(filename, renderer.period(records[-1], rel=""))
+            pages[filename] = renderer.period(records[-1], rel="")
 
-    # アーカイブ
+    pages["archive.html"] = renderer.archive(*_archive_context(daily_records, period_records))
+    return pages
+
+
+def rebuild_index(settings: Settings, publisher: Publisher) -> None:
+    """``index.html`` / ``weekly.html`` / ``monthly.html`` / ``archive.html`` を更新する.
+
+    個別レポートは生成時に 1 回書くだけなので、ここでは書き直さない
+    （S3 の ``reports/`` は生成時点のスナップショット。配信に出るのは
+    :func:`build_site` が描き直したもの）。
+    """
+    pages = build_site(settings, publisher)
+    for key in ("index.html", "weekly.html", "monthly.html", "archive.html"):
+        html = pages.get(key)
+        if html is not None:
+            publisher.put_text(key, html)
+
+
+def _archive_context(
+    daily_records: list[DailyRecord],
+    period_records: dict[PeriodType, list[PeriodRecord]],
+) -> tuple[dict[str, list], dict[str, Any]]:
+    """アーカイブページに渡す ``(sections, latest)`` を組み立てる."""
     sections: dict[str, list] = {}
-    sections["daily"] = _group_by_month([_daily_item(r) for r in daily_records], dates)
+    sections["daily"] = _group_by_month(
+        [_daily_item(r) for r in daily_records],
+        [date.fromisoformat(r.date) for r in daily_records],
+    )
     sections["weekly"] = _group_by_month(
-        [_period_item(r) for r in period_records["weekly"]],  # type: ignore[index]
-        [date.fromisoformat(r.period_start) for r in period_records["weekly"]],  # type: ignore[index]
+        [_period_item(w) for w in period_records["weekly"]],
+        [date.fromisoformat(w.period_start) for w in period_records["weekly"]],
     )
     sections["monthly"] = _group_by_year(
-        [_period_item(r) for r in period_records["monthly"]],  # type: ignore[index]
-        [date.fromisoformat(r.period_start) for r in period_records["monthly"]],  # type: ignore[index]
+        [_period_item(m) for m in period_records["monthly"]],
+        [date.fromisoformat(m.period_start) for m in period_records["monthly"]],
     )
     sections["yearly"] = (
         [
             {
                 "title": "年次",
                 "open": True,
-                "entries": [_period_item(r) for r in period_records["yearly"]],  # type: ignore[index]
+                "entries": [_period_item(y) for y in period_records["yearly"]],
             }
         ]
-        if period_records["yearly"]  # type: ignore[index]
+        if period_records["yearly"]
         else []
     )
 
     latest = {
         "daily": _daily_item(daily_records[-1]) if daily_records else None,
-        "weekly": _period_item(period_records["weekly"][-1]) if period_records["weekly"] else None,  # type: ignore[index]
-        "monthly": _period_item(period_records["monthly"][-1])  # type: ignore[index]
-        if period_records["monthly"]  # type: ignore[index]
+        "weekly": _period_item(period_records["weekly"][-1]) if period_records["weekly"] else None,
+        "monthly": _period_item(period_records["monthly"][-1])
+        if period_records["monthly"]
         else None,
-        "yearly": _period_item(period_records["yearly"][-1]) if period_records["yearly"] else None,  # type: ignore[index]
+        "yearly": _period_item(period_records["yearly"][-1]) if period_records["yearly"] else None,
     }
-    publisher.put_text("archive.html", renderer.archive(sections, latest))
+    return sections, latest
 
 
 def _group_by_month(items: list[dict], keys: list[date]) -> list[dict]:

@@ -8,19 +8,62 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from market_report import DAILY_SCHEMA_VERSION  # noqa: E402
+from fakes import FakeMarket  # noqa: E402
+
+from market_report import (
+    DAILY_SCHEMA_VERSION,  # noqa: E402
+    pipeline,  # noqa: E402
+)
+from market_report.collectors.market import Quote  # noqa: E402
 from market_report.config import load_settings  # noqa: E402
 from market_report.models import (  # noqa: E402
     AiDailyOutput,
     AiNewsAnalysis,
     AiWatchItem,
     Article,
+    Confidence,
     DailyRecord,
+    Direction,
+    FeedFetchResult,
     GlobalView,
+    Horizon,
     KeyNumber,
     MarketSnapshot,
-    Quote,
 )
+
+
+@pytest.fixture
+def fake_rss(monkeypatch):
+    """RSS 取得を固定の 3 記事に差し替える（ネットワークを使わない）."""
+
+    def _collect(settings, window_from, window_to):
+        results = [FeedFetchResult(name="CNBC Top News", url="u", http_status=200, item_count=3)]
+        titles = [
+            "Fed holds rates steady amid inflation concerns",
+            "Oil prices climb on Middle East supply worries",
+            "Nvidia earnings beat expectations on datacenter demand",
+        ]
+        articles = [
+            Article(
+                id=f"a{i}",
+                feed_name="CNBC Top News",
+                title=t,
+                summary_raw="summary " * 20,
+                summary_len=160,
+                link=f"https://example.com/{i}",
+                published="2026-11-20T12:00:00+00:00",
+            )
+            for i, t in enumerate(titles, 1)
+        ]
+        return results, articles
+
+    monkeypatch.setattr(pipeline.rss, "collect", _collect)
+
+
+@pytest.fixture
+def fake_market(monkeypatch):
+    """既定の市況プロバイダ（HTTP）を差し替える。``provider`` 引数を渡せない経路用."""
+    monkeypatch.setattr(pipeline.market_mod, "HttpChartProvider", lambda *a, **kw: FakeMarket())
 
 
 @pytest.fixture
@@ -45,7 +88,7 @@ def make_article():
     return _make
 
 
-def _news(direction: str, horizon: str = "immediate", confidence: str = "high"):
+def _news(direction: Direction, horizon: Horizon = "immediate", confidence: Confidence = "high"):
     return AiNewsAnalysis(
         headline="h",
         summary="s",
@@ -73,7 +116,7 @@ def _news(direction: str, horizon: str = "immediate", confidence: str = "high"):
 def make_daily():
     """``(日付, S&P500騰落率, 円建て騰落率, immediate判定の方向)`` から日次レコードを作る."""
 
-    def _make(d: date, spx_change: float, jpy_change: float, direction: str = "down"):
+    def _make(d: date, spx_change: float, jpy_change: float, direction: Direction = "down"):
         close = 7000 * (1 + spx_change / 100)
         prev = 7000.0
         snapshot = MarketSnapshot(

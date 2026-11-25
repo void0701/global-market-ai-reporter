@@ -81,6 +81,56 @@ def _load(publisher: Publisher, key: str, model: type[BaseModel]):
         return None
 
 
+def _get_many(publisher: Publisher, keys: list[str]) -> dict[str, str | None]:
+    """``get_many`` を持つ Publisher（S3）では並列に読む.
+
+    プロトコルを広げずにダックタイピングで拾う。``rebuild_index`` は過去の
+    全日次レコードを読むため、逐次 GET だと日数に比例して遅くなる
+    （docs/13 §8 R-5）。
+    """
+    getter = getattr(publisher, "get_many", None)
+    if callable(getter):
+        result: dict[str, str | None] = getter(keys)
+        return result
+    return {key: publisher.get_text(key) for key in keys}
+
+
+def _parse(key: str, text: str | None, model: type[BaseModel]):
+    if text is None:
+        return None
+    try:
+        return model.model_validate_json(text)
+    except ValidationError as exc:
+        log.warn(logger, "保存データの検証に失敗したためスキップ", key=key, error=str(exc)[:200])
+        return None
+
+
+def load_daily_many(publisher: Publisher, dates: list[date]) -> list[DailyRecord]:
+    """``dates`` の日次レコードをまとめて読む（取得できたものだけ・日付順）."""
+    keys = [daily_key(d) for d in dates]
+    texts = _get_many(publisher, keys)
+    out: list[DailyRecord] = []
+    for key in keys:
+        record = _parse(key, texts.get(key), DailyRecord)
+        if isinstance(record, DailyRecord):
+            out.append(record)
+    return out
+
+
+def load_period_many(
+    publisher: Publisher, period_type: PeriodType, labels: list[str]
+) -> list[PeriodRecord]:
+    """``labels`` の期間レコードをまとめて読む（取得できたものだけ・ラベル順）."""
+    keys = [period_key(period_type, label) for label in labels]
+    texts = _get_many(publisher, keys)
+    out: list[PeriodRecord] = []
+    for key in keys:
+        record = _parse(key, texts.get(key), PeriodRecord)
+        if isinstance(record, PeriodRecord):
+            out.append(record)
+    return out
+
+
 def list_daily_dates(publisher: Publisher) -> list[date]:
     out: list[date] = []
     for key in publisher.list_keys("data/daily"):

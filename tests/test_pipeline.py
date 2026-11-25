@@ -7,54 +7,11 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+from fakes import FakeMarket
 
 from market_report import pipeline
-from market_report.collectors.market import Quote
-from market_report.models import Article, FeedFetchResult
 from market_report.publishing import store
 from market_report.publishing.local import LocalPublisher
-
-
-class FakeMarket:
-    def history(self, symbol: str, days: int) -> list[Quote]:
-        base = {"^GSPC": 7000.0, "ACWI": 145.0, "USDJPY=X": 158.0, "^VIX": 20.0, "^TNX": 4.5}
-        start = base.get(symbol, 100.0)
-        return [
-            Quote(symbol=symbol, date="2026-11-19", close=start, change_pct=None),
-            Quote(
-                symbol=symbol,
-                date="2026-11-20",
-                close=start * 0.97,
-                prev_close=start,
-                change_pct=-3.0,
-            ),
-        ]
-
-
-@pytest.fixture
-def fake_rss(monkeypatch):
-    def _collect(settings, window_from, window_to):
-        results = [FeedFetchResult(name="CNBC Top News", url="u", http_status=200, item_count=3)]
-        titles = [
-            "Fed holds rates steady amid inflation concerns",
-            "Oil prices climb on Middle East supply worries",
-            "Nvidia earnings beat expectations on datacenter demand",
-        ]
-        articles = [
-            Article(
-                id=f"a{i}",
-                feed_name="CNBC Top News",
-                title=t,
-                summary_raw="summary " * 20,
-                summary_len=160,
-                link=f"https://example.com/{i}",
-                published="2026-11-20T12:00:00+00:00",
-            )
-            for i, t in enumerate(titles, 1)
-        ]
-        return results, articles
-
-    monkeypatch.setattr(pipeline.rss, "collect", _collect)
 
 
 def test_run_daily_dry_run_writes_all_three_layers(settings, fake_rss, tmp_path):
@@ -64,7 +21,7 @@ def test_run_daily_dry_run_writes_all_three_layers(settings, fake_rss, tmp_path)
         target_date=date(2026, 11, 21),
         dry_run=True,
         publisher=pub,
-        provider=FakeMarket(),  # type: ignore[arg-type]
+        provider=FakeMarket(),
     )
     assert record.dry_run is True
     root = Path(settings.output_dir)
@@ -88,7 +45,7 @@ def test_raw_news_keeps_every_article_including_dropped(settings, fake_rss):
         target_date=date(2026, 11, 21),
         dry_run=True,
         publisher=pub,
-        provider=FakeMarket(),  # type: ignore[arg-type]
+        provider=FakeMarket(),
     )
     raw = json.loads((Path(settings.output_dir) / "raw/news/2026-11-21.json").read_text())
     assert len(raw["articles"]) == 3
@@ -104,7 +61,7 @@ def test_llm_record_stores_full_prompt(settings, fake_rss):
         target_date=date(2026, 11, 21),
         dry_run=True,
         publisher=pub,
-        provider=FakeMarket(),  # type: ignore[arg-type]
+        provider=FakeMarket(),
     )
     llm = json.loads((Path(settings.output_dir) / "raw/llm/2026-11-21-daily.json").read_text())
     assert len(llm["system_prompt"]) > 500
@@ -120,7 +77,7 @@ def test_x_post_fits_limit(settings, fake_rss):
         target_date=date(2026, 11, 21),
         dry_run=True,
         publisher=pub,
-        provider=FakeMarket(),  # type: ignore[arg-type]
+        provider=FakeMarket(),
     )
     from market_report.utils.text import x_weighted_len
 
@@ -142,7 +99,7 @@ def test_weekly_report_rolls_up_dailies(settings, fake_rss):
             target_date=date(2026, 11, day),
             dry_run=True,
             publisher=pub,
-            provider=FakeMarket(),  # type: ignore[arg-type]
+            provider=FakeMarket(),
         )
     record = pipeline.run_period(settings, "weekly", label="2026-W47", dry_run=True, publisher=pub)
     assert record.stats.days == 4

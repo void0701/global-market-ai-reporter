@@ -34,13 +34,26 @@ def _parse_date(value: str) -> date:
 
 
 def _common_options() -> argparse.ArgumentParser:
-    """サブコマンドの前後どちらでも指定できるようにするための親パーサ."""
+    """サブコマンドの前後どちらでも指定できるようにするための親パーサ.
+
+    既定値に ``SUPPRESS`` を使うのが要点。通常の ``default=None`` だと、
+    サブパーサが後から解析する際に「指定されなかった」オプションを None で
+    上書きしてしまい、**サブコマンドより前に書いた指定が黙って消える**
+    （``--model X run`` が無視される）。SUPPRESS なら未指定の属性は設定
+    されないため、前に書いた値が残る。
+    """
+    sup = argparse.SUPPRESS
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--model", help="Bedrock モデルIDを上書き（品質比較用）")
-    common.add_argument("--region", help="AWS リージョンを上書き")
-    common.add_argument("--output-dir", help="出力先を上書き")
-    common.add_argument("--log-level", default=None)
-    common.add_argument("--json-logs", action="store_true", help="ログを JSON 形式で出す")
+    common.add_argument(
+        "--provider", choices=["anthropic", "bedrock"], default=sup, help="呼び出し先を上書き"
+    )
+    common.add_argument("--model", default=sup, help="モデルIDを上書き（品質比較用）")
+    common.add_argument("--region", default=sup, help="AWS リージョンを上書き")
+    common.add_argument("--output-dir", default=sup, help="出力先を上書き")
+    common.add_argument("--log-level", default=sup)
+    common.add_argument(
+        "--json-logs", action="store_true", default=sup, help="ログを JSON 形式で出す"
+    )
     return common
 
 
@@ -125,7 +138,7 @@ def cmd_run(args: argparse.Namespace, settings: Settings) -> int:
 
     ptype: PeriodType = args.report_type
     try:
-        record = pipeline.run_period(
+        period = pipeline.run_period(
             settings,
             ptype,
             label=args.period,
@@ -137,11 +150,11 @@ def cmd_run(args: argparse.Namespace, settings: Settings) -> int:
         # データ不足は異常としない（docs/09 §7-3 / A-80）
         print(f"スキップ: {exc}")
         return 0
-    print(f"\n{ptype} レポート {record.period_label} を生成しました（{record.stats.days}日分）")
+    print(f"\n{ptype} レポート {period.period_label} を生成しました（{period.stats.days}日分）")
     print(
-        "  " + str(Path(settings.output_dir) / store.period_report_key(ptype, record.period_label))
+        "  " + str(Path(settings.output_dir) / store.period_report_key(ptype, period.period_label))
     )
-    print(f"  X投稿文: {record.x_post_full}")
+    print(f"  X投稿文: {period.x_post_full}")
     return 0
 
 
@@ -188,6 +201,8 @@ def cmd_recluster(args: argparse.Namespace, settings: Settings) -> int:
 
     buckets: defaultdict[int, list] = defaultdict(list)
     for art in articles:
+        if art.cluster_id is None:
+            continue  # 重複排除を通れば必ず埋まる。念のため
         buckets[art.cluster_id].append(art)
     multi = {k: v for k, v in buckets.items() if len(v) > 1}
     print(f"  2件以上のクラスタ: {len(multi)} 個")
@@ -352,9 +367,19 @@ _COMMANDS = {
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    setup_logging(json_format=args.json_logs or None, level=args.log_level or "INFO")
 
-    settings = load_settings(model_id=args.model, region=args.region, output_dir=args.output_dir)
+    # SUPPRESS により未指定の属性は存在しないため getattr で取り出す
+    def opt(name: str):
+        return getattr(args, name, None)
+
+    setup_logging(json_format=opt("json_logs") or None, level=opt("log_level") or "INFO")
+
+    settings = load_settings(
+        provider=opt("provider"),
+        model_id=opt("model"),
+        region=opt("region"),
+        output_dir=opt("output_dir"),
+    )
 
     command = args.command or "run"
     if command == "run" and args.command is None:

@@ -55,7 +55,7 @@ def test_fetch_snapshot_aligns_all_series_to_equity_session(settings):
             "ACWI": [("2026-11-19", 148.0), ("2026-11-20", 142.0)],
         }
     )
-    snapshot = fetch_snapshot(settings, date(2026, 11, 22), provider)  # type: ignore[arg-type]
+    snapshot = fetch_snapshot(settings, date(2026, 11, 22), provider)
     assert snapshot.reference_date == "2026-11-20"
     dates = {q.date for q in snapshot.quotes.values()}
     assert dates == {"2026-11-20"}, "全系列が同じセッション日に揃っていること"
