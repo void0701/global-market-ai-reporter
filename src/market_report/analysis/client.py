@@ -30,6 +30,13 @@ T = TypeVar("T", bound=BaseModel)
 # ファーストパーティの参考単価（USD / 1M トークン）。
 # Amazon Bedrock は AWS の別料金体系であり実単価は要確認（docs/03）。
 PRICING: dict[str, tuple[float, float]] = {
+    # Claude API（ファーストパーティ）
+    "claude-opus-5": (5.0, 25.0),
+    "claude-opus-4-8": (5.0, 25.0),
+    "claude-sonnet-5": (2.0, 10.0),
+    "claude-haiku-4-5": (1.0, 5.0),
+    "claude-fable-5-1": (10.0, 50.0),
+    # Amazon Bedrock（参考値。実単価は AWS の料金体系）
     "anthropic.claude-opus-5": (5.0, 25.0),
     "anthropic.claude-opus-5-5": (5.0, 25.0),
     "anthropic.claude-opus-4-8": (5.0, 25.0),
@@ -67,18 +74,25 @@ class CredentialsError(RuntimeError):
     """AWS 認証情報を解決できない（セットアップ未完了）."""
 
 
-CREDENTIALS_HELP = """AWS の認証情報を解決できませんでした。
+CREDENTIALS_HELP = """認証情報を解決できませんでした。
 
-以下のいずれかを設定してください（docs/07-prerequisites.md）:
+provider = "anthropic"（Claude API 直接・既定）の場合、次のいずれか:
 
-  1. IAM Identity Center（推奨 / 長期キーをディスクに置かない）
-       aws configure sso
-       export AWS_PROFILE=<プロファイル名>
+  1. ant CLI でログイン（推奨）
+       brew install anthropics/tap/ant
+       ant auth login
 
-  2. 環境変数
-       export AWS_ACCESS_KEY_ID=...
-       export AWS_SECRET_ACCESS_KEY=...
-       export AWS_REGION=ap-northeast-1
+  2. API キー
+       export ANTHROPIC_API_KEY='sk-ant-...'
+       （https://platform.claude.com/settings/keys で発行）
+
+provider = "bedrock"（Amazon Bedrock）の場合:
+
+       export AWS_BEARER_TOKEN_BEDROCK='<Bedrock コンソールで発行したキー>'
+       export AWS_REGION=<リージョン>
+
+  ※ Bedrock で Claude を使うにはモデルアクセスの付与が必要です。
+     状態確認: .venv/bin/python scripts/probe_bedrock.py
 
 AWS を使わずにパイプラインを検証するには --dry-run を付けてください（無料）:
   market-report run --dry-run"""
@@ -110,22 +124,45 @@ def dereference_schema(schema: dict[str, Any]) -> dict[str, Any]:
 
 
 class BedrockAnalyzer:
-    """構造化出力で 1 回の解析を行う."""
+    """構造化出力で 1 回の解析を行う.
 
-    def __init__(self, model: str, region: str, max_tokens: int, thinking_display: str):
+    ``provider`` で呼び出し先を切り替える。どちらも Messages API なので、
+    クライアントの生成以外は共通のコードで動く。
+
+    * ``anthropic`` — Claude API を直接呼ぶ（既定）
+    * ``bedrock``   — Amazon Bedrock の ``bedrock-mantle`` エンドポイント
+    """
+
+    def __init__(
+        self,
+        model: str,
+        region: str,
+        max_tokens: int,
+        thinking_display: str,
+        provider: str = "anthropic",
+    ):
         self.model = model
         self.region = region
         self.max_tokens = max_tokens
         self.thinking_display = thinking_display
+        self.provider = provider
         self._client: Any | None = None
 
     @property
     def client(self) -> Any:
         if self._client is None:
-            from anthropic import AnthropicBedrockMantle
-
             try:
-                self._client = AnthropicBedrockMantle(aws_region=self.region)
+                if self.provider == "bedrock":
+                    from anthropic import AnthropicBedrockMantle
+
+                    self._client = AnthropicBedrockMantle(aws_region=self.region)
+                else:
+                    from anthropic import Anthropic
+
+                    # 認証情報は SDK が解決する（ANTHROPIC_API_KEY → ant CLI の
+                    # プロファイル）。ここで環境変数の有無を先読みすると、
+                    # `ant auth login` 済みの環境を誤って弾いてしまう。
+                    self._client = Anthropic()
             except (RuntimeError, ValueError) as exc:
                 raise CredentialsError(CREDENTIALS_HELP) from exc
         return self._client
