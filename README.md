@@ -1,21 +1,43 @@
 # 米国・世界ニュース AI 解析＆自動レポート配信パイプライン
 
-毎朝、米国および世界の経済ニュースと主要市況を自動収集し、Amazon Bedrock で
+毎朝、米国および世界の経済ニュースと主要市況を自動収集し、Claude（Opus 5）で
 **S&P500** と **円建て全世界株式（オルカン）** への影響を解析して、Web レポートを
 生成します。
-
-**現在 Phase 1（ローカル実行）が完成しています。** 設計の全体像と判断の経緯は
-[`docs/`](docs/README.md) を参照してください。
 
 | Phase | 内容 | 状態 |
 |---|---|---|
 | 1 | ローカル実行可能なコアパイプライン | ✅ **完了** |
-| 2 | AWS インフラ構築と Lambda 化（Terraform） | 未着手 |
+| 2 | AWS インフラ構築と Lambda 化（Terraform） | 🔶 **コード完成**・`terraform apply` 待ち |
 | 3 | X API v2 連携 | 未着手 |
+
+設計の全体像と判断の経緯は [`docs/`](docs/README.md)、**運用手順は
+[docs/14-runbook.md](docs/14-runbook.md)**、Phase 2 の残作業は
+[docs/13](docs/13-phase2-plan.md) にあります。
 
 ---
 
-## クイックスタート
+# ▶ 毎朝の実行
+
+```bash
+cd /Users/ken/work/s_and_p
+.venv/bin/market-report run
+open output/index.html
+```
+
+**約 2〜3 分・$0.24〜0.28** で日次レポートが出ます。月曜は日次ではなく週次を出します。
+
+```bash
+.venv/bin/market-report run --type weekly
+```
+
+**→ 手順の詳細・トラブル対応・課金なしで試す方法は [docs/14-runbook.md](docs/14-runbook.md)**
+
+> Phase 2 の `terraform apply` が済むと、EventBridge Scheduler が
+> 毎朝 07:00 JST にこれを自動実行します。それまでは手動です。
+
+---
+
+## 初回セットアップ
 
 ```bash
 python3 -m venv .venv
@@ -26,17 +48,22 @@ python3 -m venv .venv
 open output/index.html
 ```
 
-実際に解析するには AWS の認証情報と Bedrock のモデルアクセスが必要です
-（[docs/07-prerequisites.md](docs/07-prerequisites.md)）。設定できたかは `doctor` で検証できます。
+実際に解析するには **Claude API のキー**が必要です
+（[docs/07 §A-0-C](docs/07-prerequisites.md)）。
 
 ```bash
-# 最速ルート: Bedrock API キーだけで動く（docs/07 §A-0-F）
-export AWS_BEARER_TOKEN_BEDROCK='<Bedrock コンソールで発行したキー>'
-export AWS_REGION=ap-northeast-1
+export ANTHROPIC_API_KEY='sk-ant-...'
+# または ant CLI でログイン済みならキー不要
+ant auth login
 
 .venv/bin/market-report doctor   # 使えるモデルまで判定する
 .venv/bin/market-report run
 ```
+
+> **Amazon Bedrock ではありません。** このプロジェクトの AWS アカウントは
+> AWS Marketplace が使えずモデル利用契約を結べないため、Claude API 直接に
+> 切り替えました（[docs/07 §A-0-P](docs/07-prerequisites.md) / A-119）。
+> 制約が解消すれば `--provider bedrock` で戻せます。
 
 ---
 
@@ -44,8 +71,8 @@ export AWS_REGION=ap-northeast-1
 
 | コマンド | 課金 | 内容 |
 |---|---|---|
-| `doctor` | ほぼなし | **セットアップ検証**（使えるモデルまで判定。`--quick` で AWS 省略） |
-| `run --dry-run` | **なし** | Bedrock を呼ばず擬似データで全段を検証 |
+| `doctor` | ほぼなし | **セットアップ検証**（使えるモデルまで判定。`--quick` で外部呼び出しを省略） |
+| `run --dry-run` | **なし** | LLM を呼ばず擬似データで全段を検証 |
 | `run` | あり | 日次レポートを生成 |
 | `run --type weekly --period 2026-W47` | あり | 週次レポート（月次・年次も同様） |
 | `collect` | **なし** | 収集と重複排除だけ実行して結果を表示 |
@@ -54,11 +81,12 @@ export AWS_REGION=ap-northeast-1
 | `reanalyze --from A --to B` | あり | 保存済み記事を別スキーマ・別プロンプトで再解析 |
 | `reindex` | **なし** | index / archive を再生成 |
 
-設定の優先順は **CLI オプション > 環境変数 > `config/*.toml`**。
+設定の優先順は **CLI オプション > 環境変数 > TOML**。TOML はパッケージに
+同梱されています（`src/market_report/resources/`）。
 
 ```bash
 # モデルを差し替えて品質を比較する
-.venv/bin/market-report run --model anthropic.claude-sonnet-5
+.venv/bin/market-report run --model claude-sonnet-5
 
 # 再解析のコストだけ見積もる
 .venv/bin/market-report reanalyze --from 2026-11-01 --to 2026-11-30 --dry-run-cost
