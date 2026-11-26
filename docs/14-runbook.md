@@ -205,11 +205,20 @@ MARKET_REPORT_CONFIG_DIR=/tmp/cfg .venv/bin/market-report run --dry-run
 .venv/bin/ruff format src tests
 .venv/bin/mypy src tests
 .venv/bin/pytest -q
+TZ=UTC .venv/bin/pytest -q     # ★ CI と同じタイムゾーンで
 ./scripts/build_lambda.sh      # Lambda zip のビルド（50MB 超過で失敗する）
 ```
 
 CI（[`.github/workflows/ci.yml`](../.github/workflows/ci.yml)）と同じ内容です。
 push する前にこれが全部通っていれば、CI も通ります。
+
+> ### ⚠️ `TZ=UTC` を忘れないでください
+>
+> **開発機は JST、GitHub のランナーは UTC です。** タイムゾーン依存のバグは
+> 片方でしか再現しません。実際に、レコードの `generated_at`（実行環境の
+> ローカル時刻）と JST 表示を文字列で比較していたテストが、ローカルでは
+> 通るのに CI で落ちました。CI 側でも両方のタイムゾーンで pytest を回して
+> いますが、手元で先に気づけるほうが速いです。
 
 ---
 

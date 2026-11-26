@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime
 
 import pytest
 from fake_aws import FakeAmplify, FakeS3, FakeSecrets, FakeSns
@@ -15,6 +16,7 @@ from fake_aws import FakeAmplify, FakeS3, FakeSecrets, FakeSns
 from market_report import lambda_handler as lh
 from market_report.publishing.amplify import AmplifyDeployer
 from market_report.publishing.s3 import S3Publisher
+from market_report.rendering.html import JST
 
 
 @pytest.fixture
@@ -86,13 +88,18 @@ def test_deployed_site_contains_every_report_page(aws, fake_rss, fake_market):
 
 
 def test_report_shows_the_recorded_timestamp_not_render_time(aws, fake_rss, fake_market):
-    """A-142。毎朝描き直すので、レンダリング時刻を出すと過去分が今日の日時になる."""
+    """A-142。毎朝描き直すので、レンダリング時刻を出すと過去分が今日の日時になる.
+
+    ``generated_at`` は実行環境のローカルタイムゾーンで記録され（Lambda と
+    CI では UTC）、表示は JST に揃える。**文字列の先頭 10 文字をそのまま
+    比べると UTC と JST で日付が 1 日ずれる**ため、JST に変換してから比べる。
+    """
     lh.handler({"report_type": "daily", "date": "2026-11-21", "dry_run": True})
     record = json.loads(aws.s3.objects["data/daily/2026-11-21.json"].decode("utf-8"))
-    generated = record["generated_at"][:10]
+    expected = datetime.fromisoformat(record["generated_at"]).astimezone(JST)
 
     html = aws.s3.objects["reports/2026-11-21.html"].decode("utf-8")
-    assert f"生成: {generated}" in html
+    assert expected.strftime("生成: %Y-%m-%d %H:%M JST") in html
 
 
 def test_weekly_with_too_little_data_is_not_an_error(aws, fake_rss, fake_market):

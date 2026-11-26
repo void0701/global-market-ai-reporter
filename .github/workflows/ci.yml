@@ -50,6 +50,13 @@ jobs:
         # LLM は呼ばない（ドライラン + スタブ）ので課金は発生しない
         run: pytest -q
 
+      - name: pytest（JST）
+        # ランナーは UTC、開発機は JST。**タイムゾーン依存のバグは
+        # 片方でしか出ない**（実際に generated_at の比較で踏んだ）
+        env:
+          TZ: Asia/Tokyo
+        run: pytest -q
+
       - name: Lambda zip のビルド
         # 50MB 超過と、設定 TOML の同梱漏れ（R-1）をここで検出する
         run: ./scripts/build_lambda.sh
@@ -70,13 +77,52 @@ jobs:
           # gitleaks は履歴全体を走査する。浅いクローンでは過去の漏洩を見逃す
           fetch-depth: 0
 
-      - name: gitleaks（コミットに混入した秘密情報）
-        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+      # 公式 Action ではなくバイナリを直接使う。
+      #
+      # Action は push イベントの差分範囲（before..after）を git log に渡すが、
+      # **最初のコミットが範囲に入ると `<root>^` が存在せず git log が失敗し、
+      # 0 バイトしかスキャンしないまま終わる**（実際に踏んだ）。
+      # 「スキャンしたことになっているが実際には何も見ていない」のが最悪なので、
+      # 範囲計算に依存しない全履歴スキャンに変えた。
+      - name: gitleaks を取得（SHA256 を検証する）
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # 個人の public リポジトリではライセンス不要。Organization に
-          # 移す場合は GITLEAKS_LICENSE が必要になる
-          # GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          set -euo pipefail
+          url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSL "$url" -o /tmp/gitleaks.tar.gz
+          echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          /tmp/gitleaks version
+
+      - name: gitleaks（全履歴を走査）
+        run: |
+          set -euo pipefail
+          # --log-opts=--all で全ブランチ・全コミットを対象にする。
+          # 「0 バイトだった」を見逃さないよう、走査後に出力を確認する
+          /tmp/gitleaks git . \
+            --log-opts=--all \
+            --redact \
+            --no-banner \
+            --exit-code 1 \
+            --report-format sarif \
+            --report-path gitleaks.sarif \
+            --verbose 2>&1 | tee /tmp/gitleaks.log
+
+          if grep -qE 'scanned ~0 bytes|failed to scan' /tmp/gitleaks.log; then
+            echo "::error::gitleaks が実質何もスキャンしていません"
+            exit 1
+          fi
+
+      - name: 検出結果を保存
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gitleaks-sarif
+          path: gitleaks.sarif
+          if-no-files-found: ignore
+          retention-days: 7
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
