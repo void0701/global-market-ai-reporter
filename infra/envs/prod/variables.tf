@@ -14,11 +14,14 @@ variable "secrets_kms_key_arn" {
   type        = string
 }
 
-variable "admin_principal_arn" {
+variable "admin_role_name" {
   description = <<-EOT
-    シークレットを手動投入する人間のプリンシパル ARN。
-    `aws sts get-caller-identity --query Arn --output text` の値。
-    terraform.tfvars に書く（tfvars は .gitignore 済み / A-145）。
+    シークレットを手動投入する人間が引き受けているロールの**名前**。
+
+      aws sts get-caller-identity --query Arn --output text
+      # arn:aws:sts::<acct>:assumed-role/<この部分>/<セッション名>
+
+    このアカウント（プロジェクト方式）では `AccountFullAccessRole`。
   EOT
   type        = string
 }

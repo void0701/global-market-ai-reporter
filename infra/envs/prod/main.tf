@@ -70,9 +70,10 @@ module "secrets" {
 
   project     = local.project
   env         = local.env
+  account_id  = data.aws_caller_identity.current.account_id
   kms_key_arn = var.secrets_kms_key_arn
 
   # 値を読めるのは Lambda だけ。投入する人間だけが例外（docs/06 §3-1）
-  reader_role_arn     = module.pipeline.lambda_role_arn
-  admin_principal_arn = var.admin_principal_arn
+  reader_role_arn = module.pipeline.lambda_role_arn
+  admin_role_name = var.admin_role_name
 }

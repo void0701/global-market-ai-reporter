@@ -30,9 +30,9 @@ env:
   # **GitHub の Repository variables に設定する**（Secrets ではない。
   # どちらも機密ではなく、ログに出ても害がない値）:
   #   SECRETS_KMS_KEY_ARN  … bootstrap の出力 secrets_kms_key_arn
-  #   ADMIN_PRINCIPAL_ARN  … シークレットを手動投入する人のプリンシパル ARN
+  #   ADMIN_ROLE_NAME      … シークレットを手動投入する人のロール名
   TF_VAR_secrets_kms_key_arn: ${{ vars.SECRETS_KMS_KEY_ARN }}
-  TF_VAR_admin_principal_arn: ${{ vars.ADMIN_PRINCIPAL_ARN }}
+  TF_VAR_admin_role_name: ${{ vars.ADMIN_ROLE_NAME }}
 
 jobs:
   deploy:
@@ -63,7 +63,7 @@ jobs:
       - name: 必要な変数が設定されているか確認
         run: |
           : "${TF_VAR_secrets_kms_key_arn:?Repository variable SECRETS_KMS_KEY_ARN が未設定です}"
-          : "${TF_VAR_admin_principal_arn:?Repository variable ADMIN_PRINCIPAL_ARN が未設定です}"
+          : "${TF_VAR_admin_role_name:?Repository variable ADMIN_ROLE_NAME が未設定です}"
           echo "OK"
 
       - name: terraform init

@@ -29,6 +29,20 @@ terraform {
 
 locals {
   name = "${var.project}-${var.env}-anthropic-api-key"
+
+  # > ### なぜロール名から 2 形式を組み立てるのか
+  # >
+  # > `aws:PrincipalArn` がロール ARN を返すのかセッション ARN を返すのかは
+  # > 条件によって変わる。推測で片方だけ書くと、**値を投入した本人が
+  # > 読めなくなる**（または Deny が効かない）。
+  # >
+  # > セッション名は毎回変わりうるため、`ArnNotLike` で末尾だけワイルドカードに
+  # > する。ワイルドカードの範囲は 1 つのロールのセッション名に限られ、
+  # > 「誰でも読める」にはならない。
+  admin_arns = [
+    "arn:aws:iam::${var.account_id}:role/${var.admin_role_name}",
+    "arn:aws:sts::${var.account_id}:assumed-role/${var.admin_role_name}/*",
+  ]
 }
 
 resource "aws_secretsmanager_secret" "anthropic" {
@@ -63,8 +77,8 @@ resource "aws_secretsmanager_secret_policy" "anthropic" {
         Condition = {
           # 人間が CLI から投入・確認する経路は塞がない。
           # アカウント内の他のプリンシパルによる読み取りだけを拒否する
-          ArnNotEquals = {
-            "aws:PrincipalArn" = [var.reader_role_arn, var.admin_principal_arn]
+          ArnNotLike = {
+            "aws:PrincipalArn" = concat([var.reader_role_arn], local.admin_arns)
           }
         }
       },
