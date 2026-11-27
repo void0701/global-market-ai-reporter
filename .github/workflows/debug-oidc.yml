@@ -1,0 +1,65 @@
+# OIDC の信頼ポリシーが合わない原因を切り分けるための一時ワークフロー。
+#
+# 「Not authorized to perform sts:AssumeRoleWithWebIdentity」は
+#   (a) 信頼ポリシーの条件（sub / aud）が合っていない
+#   (b) SCP などで STS の操作自体が拒否されている
+# の両方で同じ文面になるため、クライアント側からは区別できない。
+#
+# **GitHub が実際に送っているクレームを見れば (a) か (b) かが決まる。**
+#
+# ⚠️ ID トークンそのものは資格情報なので絶対に出力しない。
+#    必要なクレーム（sub / aud / repository / ref）だけを抜き出す。
+#
+# 原因が判明したら **このファイルは削除する**。
+name: debug OIDC
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  claims:
+    name: OIDC トークンのクレームを確認
+    runs-on: ubuntu-latest
+    steps:
+      - name: クレームを表示（トークン本体は出さない）
+        run: |
+          set -euo pipefail
+
+          token=$(curl -sS \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')
+
+          # JWT のペイロード（2 番目のセグメント）だけを base64url デコードする。
+          # token を echo しないよう、python に渡して必要な項目だけ出す
+          printf '%s' "$token" | python3 - <<'PY'
+          import base64, json, sys
+
+          token = sys.stdin.read().strip()
+          payload = token.split(".")[1]
+          payload += "=" * (-len(payload) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(payload))
+
+          # 見たい項目だけ。トークン全体や署名は出さない
+          for key in ("iss", "aud", "sub", "repository", "repository_owner",
+                      "ref", "ref_type", "workflow", "event_name",
+                      "environment", "job_workflow_ref"):
+              if key in claims:
+                  print(f"{key:<18} = {claims[key]}")
+          print()
+          print("--- 信頼ポリシーに書くべき値 ---")
+          print(f'"token.actions.githubusercontent.com:aud" = "{claims.get("aud")}"')
+          print(f'"token.actions.githubusercontent.com:sub" = "{claims.get("sub")}"')
+          PY
+
+      - name: 参考 — ロールの引き受けを試す
+        continue-on-error: true
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::768756481546:role/s-and-p-gha-plan
+          aws-region: ap-southeast-2
+          retry-max-attempts: 1
