@@ -25,35 +25,56 @@ jobs:
     name: OIDC トークンのクレームを確認
     runs-on: ubuntu-latest
     steps:
+      - name: ID トークンを取得
+        run: |
+          set -euo pipefail
+          curl -sS \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" \
+            -o /tmp/oidc.json
+          # 取得できたかだけ確認する（値は出さない）
+          python3 -c "
+          import json
+          d = json.load(open('/tmp/oidc.json'))
+          assert d.get('value'), f'トークンが空です: {list(d)}'
+          print('トークン取得 OK（長さ', len(d['value']), '文字）')
+          "
+
       - name: クレームを表示（トークン本体は出さない）
         run: |
           set -euo pipefail
+          # ヒアドキュメントは python3 のスクリプト供給に使うため、
+          # トークンはファイル経由で渡す（stdin は使えない）
+          python3 <<'PY'
+          import base64
+          import json
 
-          token=$(curl -sS \
-            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" \
-            | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')
-
-          # JWT のペイロード（2 番目のセグメント）だけを base64url デコードする。
-          # token を echo しないよう、python に渡して必要な項目だけ出す
-          printf '%s' "$token" | python3 - <<'PY'
-          import base64, json, sys
-
-          token = sys.stdin.read().strip()
+          token = json.load(open("/tmp/oidc.json"))["value"]
           payload = token.split(".")[1]
           payload += "=" * (-len(payload) % 4)
           claims = json.loads(base64.urlsafe_b64decode(payload))
 
           # 見たい項目だけ。トークン全体や署名は出さない
-          for key in ("iss", "aud", "sub", "repository", "repository_owner",
-                      "ref", "ref_type", "workflow", "event_name",
-                      "environment", "job_workflow_ref"):
+          for key in (
+              "iss",
+              "aud",
+              "sub",
+              "repository",
+              "repository_owner",
+              "ref",
+              "ref_type",
+              "workflow",
+              "event_name",
+              "environment",
+              "job_workflow_ref",
+          ):
               if key in claims:
                   print(f"{key:<18} = {claims[key]}")
+
           print()
           print("--- 信頼ポリシーに書くべき値 ---")
-          print(f'"token.actions.githubusercontent.com:aud" = "{claims.get("aud")}"')
-          print(f'"token.actions.githubusercontent.com:sub" = "{claims.get("sub")}"')
+          print(f'aud = "{claims.get("aud")}"')
+          print(f'sub = "{claims.get("sub")}"')
           PY
 
       - name: 参考 — ロールの引き受けを試す
