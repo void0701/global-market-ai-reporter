@@ -50,8 +50,24 @@ resource "aws_secretsmanager_secret" "anthropic" {
   description = "Claude API キー。値は手動投入する（Terraform では管理しない）"
   kms_key_id  = var.kms_key_arn
 
-  # 誤削除しても 7 日は戻せる。0 にすると即時削除で復旧不能
-  recovery_window_in_days = 7
+  # > ### ⚠️ 復旧猶予を 0 にする理由（docs/13 §8 R-19）
+  # >
+  # > 当初 7 日にしていたが、**セットアップ中にデッドロックを起こした**。
+  # >
+  # > 1. 作成は成功したが直後の読み戻しで権限不足になり apply が失敗
+  # > 2. Terraform は中途半端に作られたリソースを「置き換え」対象にする
+  # > 3. 次の apply が destroy → `DeleteSecret`（7 日の削除待機）
+  # > 4. その名前は 7 日間再利用できず、create が
+  # >    `You can't create this secret because a secret with this name is
+  # >    already scheduled for deletion` で失敗
+  # >
+  # > **7 日の猶予がこの鍵を守るものは少ない。** 中身は再発行できる API
+  # > キーであり、失っても Console で作り直して入れ直すだけ。一方で
+  # > 名前のロックは**復旧を 7 日間ブロックする**実害がある。
+  # >
+  # > 誤削除への本当の防御は、CI に `DeleteSecret` を与えないことではなく
+  # > **値を読めないこと**（A-175）と `prevent_destroy` 相当の運用規律。
+  recovery_window_in_days = var.recovery_window_in_days
 }
 
 # リソースポリシーで二重に守る（docs/06 §3-1）。

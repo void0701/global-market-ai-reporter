@@ -287,6 +287,7 @@
 | A-175 | **CI には secrets 用 CMK を `kms:ViaService` 限定で渡す**（A-65 を改訂） | 「鍵を一切渡さない」では `CreateSecret` が `AccessDeniedException: Access to KMS is not allowed` で失敗し、**シークレットの容器すら作れない**（R-16・実機で発覚）。`ViaService` を付けると CI は KMS を直接叩けず、`GetSecretValue` / `PutSecretValue` は明示的 Deny のままなので**暗号文を手に入れる経路がない**。A-65 の意図は保たれる |
 | A-176 | **この文は prod のみに付ける**（`dynamic` で `each.key == "prod"`） | dev はシークレットを作らないため不要（A-140）。環境ごとに最小権限を保つ |
 | A-177 | **CI の `secretsmanager` 権限はワイルドカードを使わず個別に列挙する** | `Get*` でも明示的 Deny が勝つので安全だが、**意図が読めない**。`GetResourcePolicy` が必要だと分かるまで `Describe*` / `List*` だけで足りると誤認していた（R-18）。列挙すれば「容器のライフサイクルのみ」が一目で分かる |
+| A-178 | **シークレットの `recovery_window_in_days` は 0**（7 日から変更） | 作成が中途で失敗すると Terraform が置き換えを試み、`DeleteSecret` の 7 日待機で**名前がロックされて復旧が 7 日ブロックされる**（R-19・実機で発覚）。中身は再発行できる API キーなので猶予の価値は小さく、ロックの実害が大きい。誤削除への防御は猶予ではなく「CI が値を読めないこと」（A-175）に置く |
 
 ## B. 保留中の判断
 

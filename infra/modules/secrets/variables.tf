@@ -33,3 +33,20 @@ variable "admin_role_name" {
   EOT
   type        = string
 }
+
+variable "recovery_window_in_days" {
+  description = <<-EOT
+    削除後の復旧猶予（日）。**0 = 即時削除**。
+
+    既定を 0 にしているのは、7 日にすると「名前が 7 日間再利用できない」
+    ことがセットアップ中のデッドロックになるため（R-19）。中身は再発行
+    できる API キーなので猶予の価値は小さい。
+  EOT
+  type        = number
+  default     = 0
+
+  validation {
+    condition     = var.recovery_window_in_days == 0 || var.recovery_window_in_days >= 7
+    error_message = "0（即時）または 7〜30 日。AWS の仕様で 1〜6 は指定できません。"
+  }
+}

@@ -364,6 +364,7 @@ Phase 2 の設計を、**実際のコードが Lambda で動くか**という観
 > | **R-16** CI に secrets CMK が必要 | ✅ **修正済み**（2026-11-27）。`kms:ViaService` で Secrets Manager 経由に限定。bootstrap の再 apply が必要 |
 > | **R-17** Amplify の CreateApp スロットリング | ⏳ **時間を置いて再 apply**。コード変更は不要。**アプリ数は 1/25 でクォータ余裕あり**＝純粋な API レート制限 |
 > | **R-18** `GetResourcePolicy` が不足 | ✅ **修正済み**（2026-11-27）。bootstrap の再 apply が必要 |
+> | **R-19** シークレット名が 7 日ロックされた | ✅ **修正済み**（2026-11-27）。猶予を 0 に。既存の名前は `--force-delete-without-recovery` で解放する |
 > | R-9 / R-12 | 未着手 |
 >
 > **検証:** `ruff check` ✅ / `ruff format` ✅ / `pytest` ✅ **57 passed**（+6）/ `mypy src tests` ✅
@@ -596,6 +597,65 @@ condition {
 
 ---
 
+### ✅ R-19. 作成が中途で失敗したシークレットが「名前のロック」でデッドロックした
+
+**[確認済: 実機 apply 2026-11-27]**
+
+R-18 を直して再 apply したところ、別の失敗になりました。
+
+```
+Error: creating Secrets Manager Secret (s-and-p-prod-anthropic-api-key):
+InvalidRequestException: You can't create this secret because a secret with
+this name is already scheduled for deletion.
+```
+
+AWS 側の記録を見ると、**作成 10 分後に削除されていました**。
+
+```
+Created: 2026-11-27T15:11:52   ← R-18 で失敗した apply が作成
+Deleted: 2026-11-27T15:21:33   ← 次の apply が「置き換え」を試みて削除
+HasValue: false
+```
+
+#### 連鎖の仕組み
+
+1. 作成は成功したが、**直後の `GetResourcePolicy` で権限不足**になり apply が失敗（R-18）
+2. Terraform は中途半端に作られたリソースを**置き換え対象**として記録する
+3. 次の apply が destroy → `DeleteSecret`（**7 日の削除待機**）
+4. その名前は 7 日間再利用できず、create が上記エラーで失敗
+
+**権限を直しても、名前がロックされたままなので先に進めません。**
+
+#### 対処 1: 猶予を 0 にした（A-178）
+
+```hcl
+recovery_window_in_days = var.recovery_window_in_days   # 既定 0
+```
+
+**7 日の猶予がこの鍵を守るものは少ない。** 中身は再発行できる API キーで、
+失っても Console で作り直して入れ直すだけです。一方で名前のロックは
+**復旧を 7 日間ブロックする**実害があります。
+
+誤削除への本当の防御は猶予期間ではなく、**CI が値を読めないこと**
+（A-175）と運用規律です。
+
+> AWS の仕様で 1〜6 日は指定できません（0 か 7〜30）。`validation` で弾いています。
+
+#### 対処 2: 今ロックされている名前を解放する
+
+既存のものは `0` に変えても自動では解放されません。**値が入っていないので
+失うものはありません。**
+
+```bash
+aws secretsmanager delete-secret \
+  --secret-id s-and-p-prod-anthropic-api-key \
+  --force-delete-without-recovery
+```
+
+これで名前が即座に空き、次の apply が作り直します。
+
+---
+
 ### ✅ R-18. Terraform はリソースポリシーを**読み戻す**ので `GetResourcePolicy` も必要
 
 **[確認済: 実機 apply 2026-11-27]**
@@ -635,6 +695,31 @@ TagResource / UntagResource
 > KmsKeyId: arn:aws:kms:...:key/6b2a2dd7-...
 > HasValue: false   ← 設計どおり（A-33）
 > ```
+
+---
+
+### 🔍 権限の抜けを繰り返さないための棚卸し（2026-11-27）
+
+R-16 / R-18 と**権限不足を 2 回続けて踏んだ**ため、デプロイロールの許可と
+prod が作るリソースを機械的に突き合わせました。
+
+| サービス | 許可の形 | リスク |
+|---|---|---|
+| amplify / budgets / cloudwatch / lambda / logs / s3 / scheduler / sns | **`:*`（ワイルドカード）** | 抜けは起きない |
+| **iam** | 列挙 12 個 | `aws_iam_role` / `aws_iam_role_policy` に必要な操作は揃っている |
+| **secretsmanager** | 列挙 11 個 | R-18 で補完済み |
+| **kms** | 列挙 + 条件付き 2 文 | state 用と secrets 用（ViaService 限定）で分離 |
+
+**失敗した 2 回はどちらも「列挙のみ」のサービスでした。** 残る列挙サービスの
+操作は洗い出し済みなので、同じ原因での失敗は起きにくい見込みです。
+
+> ワイルドカードのままにしているのは、**Terraform でインフラを作るロールは
+> 作成対象サービスに対して広い権限が必要**で、絞っても抜けを追いかけ続ける
+> ことになるためです。代わりに
+> **state の書き込み範囲**（環境別プレフィックス / A-166）、
+> **secrets 用 CMK の用途限定**（ViaService / A-175）、
+> **値の取得の明示的 Deny**（A-167）
+> で実害のある操作を止めています。
 
 ---
 
