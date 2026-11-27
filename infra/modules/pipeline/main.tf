@@ -189,8 +189,29 @@ resource "aws_lambda_function" "report" {
   filename         = var.lambda_zip_path
   source_code_hash = filebase64sha256(var.lambda_zip_path)
 
-  memory_size = 1024
-  # LLM 実測 153 秒 + 取得 20 秒。300 秒では余裕が足りない（A-128）
+  # > ### ⚠️ このアカウントは Lambda のメモリ上限が 512MB
+  # >
+  # > 1024 を指定すると CreateFunction が
+  # > `ValidationException: 'MemorySize' value failed to satisfy constraint:
+  # > Member must have value less than or equal to 512` で 400 を返す
+  # > （docs/13 §8 R-15 / A-173）。service-quotas には現れない制約。
+  # >
+  # > **実測では 512MB で約 10 年分もつ**（下表）。build_site() が過去の
+  # > 全レコードを読むため日数に比例して増える。
+  # >
+  # > | 日数 | ページ | zip | 最大 RSS |
+  # > |---|---|---|---|
+  # > | 3 | 5 | 0.0 MB | 34.7 MB |
+  # > | 300（約1.2年） | 302 | 3.0 MB | 93.8 MB |
+  # > | 600（約2.3年） | 602 | 6.0 MB | 150.0 MB |
+  # > | 1300（約5年） | 1302 | 13.1 MB | 282.0 MB |
+  # >
+  # > CloudWatch の Max Memory Used が 450MB に近づいたら、クォータの
+  # > 引き上げ申請かアーカイブの打ち切りを検討する。
+  memory_size = var.memory_size
+
+  # LLM 実測 153 秒 + 取得 20 秒。300 秒では余裕が足りない（A-128）。
+  # アカウントの Function timeout クォータは 900 秒なので 600 は通る
   timeout = 600
 
   # 暴走時のコスト上限。スケジュールは 30 分ずらしているので 2 で足りる

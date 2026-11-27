@@ -360,6 +360,7 @@ Phase 2 の設計を、**実際のコードが Lambda で動くか**という観
 > | **R-6** 失敗通知の検知 | ✅ **1 層目を実装済み。** ハンドラが捕捉して SNS に送り、再送出して `Errors` を立てる。2 層目のアラームは Terraform 側 |
 > | **R-13** IAM の description に日本語が入らない | ✅ **修正済み**（2026-11-27）。実機 apply で発覚。`scripts/check_iam_descriptions.py` を CI に追加して再発を防いだ |
 > | **R-14** OIDC の sub に数値 ID が必要 | ✅ **修正済み**（2026-11-27）。実機のクレームを確認して判明。bootstrap の再 apply が必要 |
+> | **R-15** Lambda のメモリ上限 512MB | ✅ **修正済み**（2026-11-27）。dev の apply で発覚。実測で 512MB は約 10 年分もつ |
 > | R-9 / R-12 | 未着手 |
 >
 > **検証:** `ruff check` ✅ / `ruff format` ✅ / `pytest` ✅ **57 passed**（+6）/ `mypy src tests` ✅
@@ -544,6 +545,59 @@ pretty-URL 挙動です。追加設定は要りません。
 
 **B-2 だけは推奨を出せません。** SNS サブスクリプションに必要なので、
 `infra/` を書く前に決めてください。
+
+### ✅ R-15. このアカウントは Lambda のメモリ上限が 512MB
+
+**[確認済: 実機 apply 2026-11-27]**
+
+dev の `terraform apply` で Lambda の作成が失敗しました。
+
+```
+Error: creating Lambda Function (s-and-p-dev-report): api error ValidationException:
+'MemorySize' value failed to satisfy constraint:
+Member must have value less than or equal to 512
+```
+
+A-128 で 1024MB と決めていましたが、このアカウント（プロジェクト方式）では
+**512MB が上限**です。**`service-quotas` には現れません**（API の
+ValidationException でしか分かりません）。
+
+#### 他の上限は問題なし
+
+| クォータ | 値 | 本構成 | |
+|---|---|---|---|
+| Function timeout | 900 秒 | 600 秒 | ✅ |
+| Concurrent executions | 400 | 予約 2 | ✅ |
+| Function and layer storage | 300 GB | 6.2 MB | ✅ |
+
+#### 512MB で足りるか — 実測した
+
+`build_site()` が過去の全レコードを読むため、メモリは日数に比例します。
+日次レコードを複製して規模を変えて測りました。
+
+| 日数 | ページ | zip | 最大 RSS |
+|---|---|---|---|
+| 3 | 5 | 0.0 MB | **34.7 MB** |
+| 60 | 62 | 0.6 MB | 44.0 MB |
+| 150 | 152 | 1.5 MB | 61.5 MB |
+| 300（約1.2年） | 302 | 3.0 MB | **93.8 MB** |
+| 600（約2.3年） | 602 | 6.0 MB | **150.0 MB** |
+| 1300（約5年） | 1302 | 13.1 MB | **282.0 MB** |
+
+**約 0.19 MB/日** で増えるので、512MB に達するのは **約 10 年後**です
+（260営業日/年）。当面は問題になりません。
+
+> **CPU も下がります。** Lambda の CPU 配分はメモリに比例するため、
+> 1024MB の約半分になります。ただし実行時間の大半は LLM の応答待ち
+> （130〜155 秒のネットワーク I/O）なので、体感への影響はほぼありません。
+
+#### 対処
+
+- `memory_size` を変数にし、既定 512 + **512 超を拒否する `validation`** を付けた（A-173）
+- CloudWatch の `Max Memory Used` が 450MB に近づいたら、クォータの
+  引き上げ申請かアーカイブの打ち切りを検討する（運用後の監視項目）
+
+---
 
 ### ✅ R-14. GitHub の OIDC `sub` には不変の数値 ID が入る
 

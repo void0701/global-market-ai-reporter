@@ -61,6 +61,20 @@ variable "schedules_enabled" {
   default     = false
 }
 
+variable "memory_size" {
+  description = <<-EOT
+    Lambda のメモリ(MB)。**このアカウントの上限は 512**（超えると
+    CreateFunction が 400 / docs/13 §8 R-15）。実測で約 10 年分もつ。
+  EOT
+  type        = number
+  default     = 512
+
+  validation {
+    condition     = var.memory_size <= 512
+    error_message = "このアカウントの Lambda メモリ上限は 512MB です（R-15）。"
+  }
+}
+
 variable "log_retention_days" {
   type    = number
   default = 7

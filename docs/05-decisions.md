@@ -282,6 +282,8 @@
 | A-170 | **IAM の `description` は英語にし、日本語の説明は HCL のコメントに残す** | IAM だけ `description` が ASCII + Latin-1 に限られ、日本語を入れると `CreateRole` が 400 を返す（R-13・実機で発覚）。**サーバー側の検証なので `plan` では防げない**ため、`scripts/check_iam_descriptions.py` を CI に入れて静的に止める。KMS / Secrets Manager / CloudWatch / Scheduler / Lambda / Amplify には文字種の制約が無いので日本語のまま |
 | A-171 | **OIDC の信頼ポリシーには `owner@<owner_id>/<repo>@<repo_id>` の形を使う** | GitHub の `sub` クレームには不変の数値 ID が入る（R-14・実機確認）。名前だけでは `Not authorized` になる。リポジトリ名の使い回し攻撃を防ぐ仕組みなので、ID を使うほうが安全。ID は変数化し `locals.oidc_repo` で 3 ロールに共有する（ワイルドカードは使わない） |
 | A-172 | **S0 のような権限スパイクでは「作成できるか」だけでなく「実際に使えるか」まで検証する** | OIDC プロバイダとロールの作成は成功したが、**引き受けは未検証**だった。`Not authorized` は信頼ポリシー不一致と SCP 拒否で同じ文面になり切り分けできないため、作成の成否だけでは不十分（R-14 の教訓） |
+| A-173 | ~~Lambda のメモリは 1024MB~~ → **512MB**（A-128 を改訂） | このアカウントの上限が 512MB で、1024 だと `CreateFunction` が 400（R-15・実機で発覚）。**`service-quotas` には現れない**。実測で約 10 年分もつことを確認した（0.19 MB/日）。`variables.tf` に 512 超を拒否する validation を入れた |
+| A-174 | **CloudWatch の `Max Memory Used` を運用後の監視項目にする** | `build_site()` が全レコードを読むためメモリは日数に比例する。450MB に近づいたらクォータ引き上げかアーカイブ打ち切りを検討（R-15） |
 
 ## B. 保留中の判断
 
