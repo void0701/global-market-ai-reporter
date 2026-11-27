@@ -160,8 +160,18 @@ jobs:
           terraform_version: 1.17.2
           terraform_wrapper: false
 
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
       - name: terraform fmt
         run: terraform fmt -check -recursive infra
+
+      - name: IAM の description の文字種
+        # IAM だけ description が ASCII + Latin-1 に限られ、日本語を入れると
+        # CreateRole が 400 を返す。**サーバー側の検証なので plan では
+        # 検出できない**（実際に apply で踏んだ / R-13）
+        run: python3 scripts/check_iam_descriptions.py infra
 
       - name: terraform validate（全ディレクトリ）
         run: |

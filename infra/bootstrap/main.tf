@@ -219,21 +219,35 @@ data "aws_iam_policy_document" "assume_deploy_prod" {
   }
 }
 
+# > ### ⚠️ IAM の description は ASCII + Latin-1 のみ
+# >
+# > `roleDescriptionType` の pattern は
+# > `[\u0009\u000A\u000D\u0020-\u007E\u00A1-\u00FF]*` で、**日本語を入れると
+# > `CreateRole` が ValidationError で 400 を返す**（実際に踏んだ）。
+# > サーバー側の検証なので `terraform plan` では検出できない。
+# >
+# > KMS / Secrets Manager / CloudWatch / Scheduler / Lambda / Amplify の
+# > description には文字種の制約が無い（botocore のモデルで確認）。
+# > **IAM だけが例外**なので、説明は英語にしてコメントに日本語を残す。
+
 resource "aws_iam_role" "gha_plan" {
-  name               = "${local.prefix}-gha-plan"
-  description        = "terraform plan 専用（読み取りのみ）"
+  name = "${local.prefix}-gha-plan"
+  # terraform plan 専用（読み取りのみ）
+  description        = "terraform plan only (read-only)"
   assume_role_policy = data.aws_iam_policy_document.assume_plan.json
 }
 
 resource "aws_iam_role" "gha_deploy_dev" {
-  name               = "${local.prefix}-gha-deploy-dev"
-  description        = "dev への apply"
+  name = "${local.prefix}-gha-deploy-dev"
+  # dev への apply
+  description        = "apply to dev"
   assume_role_policy = data.aws_iam_policy_document.assume_deploy_dev.json
 }
 
 resource "aws_iam_role" "gha_deploy_prod" {
-  name               = "${local.prefix}-gha-deploy-prod"
-  description        = "prod への apply（GitHub Environments の承認が必要）"
+  name = "${local.prefix}-gha-deploy-prod"
+  # prod への apply。GitHub Environments の承認が必要
+  description        = "apply to prod (requires GitHub Environments approval)"
   assume_role_policy = data.aws_iam_policy_document.assume_deploy_prod.json
 }
 

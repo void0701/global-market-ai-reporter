@@ -358,6 +358,7 @@ Phase 2 の設計を、**実際のコードが Lambda で動くか**という観
 > | **R-3** Amplify の全置き換え | ✅ **実装済み。** `build_site()` で全ページを描き直し、zip 1 本で送る |
 > | **R-5** 逐次 S3 GET | ✅ **実装済み。** `S3Publisher.get_many()` で並列化（既定 16 並列） |
 > | **R-6** 失敗通知の検知 | ✅ **1 層目を実装済み。** ハンドラが捕捉して SNS に送り、再送出して `Errors` を立てる。2 層目のアラームは Terraform 側 |
+> | **R-13** IAM の description に日本語が入らない | ✅ **修正済み**（2026-11-27）。実機 apply で発覚。`scripts/check_iam_descriptions.py` を CI に追加して再発を防いだ |
 > | R-9 / R-12 | 未着手 |
 >
 > **検証:** `ruff check` ✅ / `ruff format` ✅ / `pytest` ✅ **57 passed**（+6）/ `mypy src tests` ✅
@@ -542,6 +543,46 @@ pretty-URL 挙動です。追加設定は要りません。
 
 **B-2 だけは推奨を出せません。** SNS サブスクリプションに必要なので、
 `infra/` を書く前に決めてください。
+
+### ✅ R-13. IAM の `description` に日本語を入れると apply が 400 で落ちる
+
+**[確認済: 実機 apply 2026-11-27]**
+
+`infra/bootstrap` の `terraform apply` で IAM ロール 3 件が失敗しました。
+
+```
+Error: creating IAM Role (s-and-p-gha-plan): api error ValidationError:
+1 validation error detected: Value at 'description' failed to satisfy
+constraint: Member must satisfy regular expression pattern:
+[\u0009\u000A\u000D\u0020-\u007E\u00A1-\u00FF]*
+```
+
+つまり **TAB / LF / CR + ASCII 印字可能 + Latin-1 補助のみ**で、日本語は
+入りません。**サーバー側の検証なので `terraform plan` では検出できません。**
+
+#### 制約があるのは IAM だけ
+
+botocore のサービスモデルで確認しました。
+
+| サービス | `description` の pattern | 日本語 |
+|---|---|---|
+| **IAM** `roleDescriptionType` | `[\u0009\u000A\u000D\u0020-\u007E\u00A1-\u00FF]*` | ❌ |
+| KMS `DescriptionType` | 制約なし（max 8192） | ✅ |
+| Secrets Manager `DescriptionType` | 制約なし（max 2048） | ✅ |
+| CloudWatch `AlarmDescription` | 制約なし（max 1024） | ✅ |
+| Scheduler `Description` | 制約なし（max 512） | ✅ |
+| Lambda `Description` | 制約なし（max 256） | ✅ |
+| Amplify `Description` | `(?s).*` | ✅ |
+
+**同じ apply で KMS キーは成功しています。** IAM だけが例外でした。
+
+#### 対処
+
+- IAM の `description` を英語にし、日本語の説明は HCL のコメントに残した（A-170）
+- **`scripts/check_iam_descriptions.py` を作り CI の `iac` ジョブに入れた。**
+  plan では防げない種類のエラーなので、静的検査で止める
+
+---
 
 ### 🔵 R-12. ドキュメントに CloudFront の記述が約 25 箇所残っている
 

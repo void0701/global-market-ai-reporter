@@ -279,6 +279,7 @@
 | A-167 | **CI のデプロイロールに `GetSecretValue` / `PutSecretValue` の明示的 Deny を付ける** | 容器は作れるが中身は読めない、という方針（A-33）を IAM でも裏打ちする。secrets 用 CMK を渡さないことと合わせて二重防御 |
 | A-168 | **`infra/spike/` は削除せず完了バナーを付けて残す** | 何を検証したかの記録として価値がある。再実行を防ぐため、CloudFront が 403 になることとプロバイダが旧版であることを冒頭に明記し、checkov の対象からも除外する |
 | A-169 | **Amplify に `custom_rule` を設定しない** | 存在しないパスは `301` を 1 回経て **404** で終わることを実機確認済み（R-10）。SPA 用フォールバックを入れると 404 が 200 になり、検証済みの挙動を壊す |
+| A-170 | **IAM の `description` は英語にし、日本語の説明は HCL のコメントに残す** | IAM だけ `description` が ASCII + Latin-1 に限られ、日本語を入れると `CreateRole` が 400 を返す（R-13・実機で発覚）。**サーバー側の検証なので `plan` では防げない**ため、`scripts/check_iam_descriptions.py` を CI に入れて静的に止める。KMS / Secrets Manager / CloudWatch / Scheduler / Lambda / Amplify には文字種の制約が無いので日本語のまま |
 
 ## B. 保留中の判断
 
