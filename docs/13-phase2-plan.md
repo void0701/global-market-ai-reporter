@@ -362,7 +362,8 @@ Phase 2 の設計を、**実際のコードが Lambda で動くか**という観
 > | **R-14** OIDC の sub に数値 ID が必要 | ✅ **修正済み**（2026-11-27）。実機のクレームを確認して判明。bootstrap の再 apply が必要 |
 > | **R-15** Lambda のメモリ上限 512MB | ✅ **修正済み**（2026-11-27）。dev の apply で発覚。実測で 512MB は約 10 年分もつ |
 > | **R-16** CI に secrets CMK が必要 | ✅ **修正済み**（2026-11-27）。`kms:ViaService` で Secrets Manager 経由に限定。bootstrap の再 apply が必要 |
-> | **R-17** Amplify の CreateApp スロットリング | ⏳ **時間を置いて再 apply**。コード変更は不要 |
+> | **R-17** Amplify の CreateApp スロットリング | ⏳ **時間を置いて再 apply**。コード変更は不要。**アプリ数は 1/25 でクォータ余裕あり**＝純粋な API レート制限 |
+> | **R-18** `GetResourcePolicy` が不足 | ✅ **修正済み**（2026-11-27）。bootstrap の再 apply が必要 |
 > | R-9 / R-12 | 未着手 |
 >
 > **検証:** `ruff check` ✅ / `ruff format` ✅ / `pytest` ✅ **57 passed**（+6）/ `mypy src tests` ✅
@@ -595,6 +596,48 @@ condition {
 
 ---
 
+### ✅ R-18. Terraform はリソースポリシーを**読み戻す**ので `GetResourcePolicy` も必要
+
+**[確認済: 実機 apply 2026-11-27]**
+
+R-16 を直したあと、シークレットの**容器は作成されましたが**、直後に失敗しました。
+
+```
+Error: reading Secrets Manager Secret (...) policy: AccessDeniedException:
+User: .../s-and-p-gha-deploy-prod/GitHubActions is not authorized to perform:
+secretsmanager:GetResourcePolicy
+```
+
+`PutResourcePolicy` は許可していましたが、**Terraform は apply 後に現在の
+ポリシーを読み戻して state に反映する**ため `GetResourcePolicy` も必要でした。
+
+#### `Describe*` / `List*` のワイルドカードでは足りない
+
+`GetResourcePolicy` は `Get*` に含まれますが、`Get*` を許可すると
+`GetSecretValue` も入ってしまいます。ただし **IAM では明示的 Deny が常に
+Allow に勝つ**ため、`Get*` + `GetSecretValue` の Deny という書き方でも
+安全です。それでも**意図が読めるよう個別に列挙**しました（A-177）。
+
+```
+CreateSecret / DeleteSecret / UpdateSecret
+DescribeSecret / ListSecrets / ListSecretVersionIds
+GetResourcePolicy / PutResourcePolicy / DeleteResourcePolicy
+TagResource / UntagResource
+```
+
+`GetSecretValue` / `PutSecretValue` の明示的 Deny はそのままです。
+
+> **容器は作成され、値は未投入の状態で残っています。** 再 apply は
+> 作成済みのリソースを飛ばして続きから進みます。
+>
+> ```
+> Name: s-and-p-prod-anthropic-api-key
+> KmsKeyId: arn:aws:kms:...:key/6b2a2dd7-...
+> HasValue: false   ← 設計どおり（A-33）
+> ```
+
+---
+
 ### ⏳ R-17. Amplify の `CreateApp` が同日中は再度スロットリングされた
 
 prod の apply では Amplify アプリの作成も失敗しました。
@@ -608,6 +651,22 @@ R-7 で既知の制約ですが、**dev の作成（02:03）から約 4 時間�
 
 **対処は時間を置いて再 apply するだけ**です。Terraform は作成済みの
 リソースを state で把握しているため、残りだけが作られます。
+
+#### アプリ数のクォータではない
+
+`service-quotas` で確認したところ Amplify の制限は **Apps: 25** だけで、
+現在は **1 個**（dev）しかありません。つまり**純粋な API のレート制限**で、
+`service-quotas` には現れません（Lambda のメモリ上限 R-15 と同じパターン）。
+
+```
+2026-11-27 02:03  dev の CreateApp     → ✅ 成功
+2026-11-27 05:57  prod の CreateApp    → ❌ Rate exceeded
+2026-11-27 06:11  prod の CreateApp    → ❌ Rate exceeded
+```
+
+**1 日あたり数回程度の非常に遅い補充**と見られます。CLI で作って
+`terraform import` する案も考えましたが、**レート制限はアカウント単位なので
+CLI でも同じく弾かれます**。待つのが唯一の手です。
 
 > **恒久的な対策が必要なら**、Amplify アプリだけ AWS CLI で 1 回作って
 > `terraform import` する方法があります。アプリの作成は環境ごとに 1 回なので、

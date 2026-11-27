@@ -415,12 +415,22 @@ data "aws_iam_policy_document" "deploy" {
       "logs:*",
       "s3:*",
       "scheduler:*",
+      # シークレットの「容器」のライフサイクルに必要なものを列挙する。
+      # **値に触る操作（GetSecretValue / PutSecretValue）は下で明示的に
+      # Deny している**ので、ここに含まれていても読めない（A-177）。
       "secretsmanager:CreateSecret",
       "secretsmanager:DeleteSecret",
-      "secretsmanager:Describe*",
-      "secretsmanager:List*",
+      "secretsmanager:UpdateSecret",
+      "secretsmanager:DescribeSecret",
+      "secretsmanager:ListSecrets",
+      "secretsmanager:ListSecretVersionIds",
+      # リソースポリシーは作成だけでなく**読み取りも必要**。
+      # Terraform は apply 後に現在のポリシーを読み戻す（R-18）
+      "secretsmanager:GetResourcePolicy",
       "secretsmanager:PutResourcePolicy",
+      "secretsmanager:DeleteResourcePolicy",
       "secretsmanager:TagResource",
+      "secretsmanager:UntagResource",
       "sns:*",
       "sts:GetCallerIdentity",
     ]
