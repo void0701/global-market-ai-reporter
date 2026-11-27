@@ -284,6 +284,8 @@
 | A-172 | **S0 のような権限スパイクでは「作成できるか」だけでなく「実際に使えるか」まで検証する** | OIDC プロバイダとロールの作成は成功したが、**引き受けは未検証**だった。`Not authorized` は信頼ポリシー不一致と SCP 拒否で同じ文面になり切り分けできないため、作成の成否だけでは不十分（R-14 の教訓） |
 | A-173 | ~~Lambda のメモリは 1024MB~~ → **512MB**（A-128 を改訂） | このアカウントの上限が 512MB で、1024 だと `CreateFunction` が 400（R-15・実機で発覚）。**`service-quotas` には現れない**。実測で約 10 年分もつことを確認した（0.19 MB/日）。`variables.tf` に 512 超を拒否する validation を入れた |
 | A-174 | **CloudWatch の `Max Memory Used` を運用後の監視項目にする** | `build_site()` が全レコードを読むためメモリは日数に比例する。450MB に近づいたらクォータ引き上げかアーカイブ打ち切りを検討（R-15） |
+| A-175 | **CI には secrets 用 CMK を `kms:ViaService` 限定で渡す**（A-65 を改訂） | 「鍵を一切渡さない」では `CreateSecret` が `AccessDeniedException: Access to KMS is not allowed` で失敗し、**シークレットの容器すら作れない**（R-16・実機で発覚）。`ViaService` を付けると CI は KMS を直接叩けず、`GetSecretValue` / `PutSecretValue` は明示的 Deny のままなので**暗号文を手に入れる経路がない**。A-65 の意図は保たれる |
+| A-176 | **この文は prod のみに付ける**（`dynamic` で `each.key == "prod"`） | dev はシークレットを作らないため不要（A-140）。環境ごとに最小権限を保つ |
 
 ## B. 保留中の判断
 

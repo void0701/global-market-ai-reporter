@@ -361,6 +361,8 @@ Phase 2 の設計を、**実際のコードが Lambda で動くか**という観
 > | **R-13** IAM の description に日本語が入らない | ✅ **修正済み**（2026-11-27）。実機 apply で発覚。`scripts/check_iam_descriptions.py` を CI に追加して再発を防いだ |
 > | **R-14** OIDC の sub に数値 ID が必要 | ✅ **修正済み**（2026-11-27）。実機のクレームを確認して判明。bootstrap の再 apply が必要 |
 > | **R-15** Lambda のメモリ上限 512MB | ✅ **修正済み**（2026-11-27）。dev の apply で発覚。実測で 512MB は約 10 年分もつ |
+> | **R-16** CI に secrets CMK が必要 | ✅ **修正済み**（2026-11-27）。`kms:ViaService` で Secrets Manager 経由に限定。bootstrap の再 apply が必要 |
+> | **R-17** Amplify の CreateApp スロットリング | ⏳ **時間を置いて再 apply**。コード変更は不要 |
 > | R-9 / R-12 | 未着手 |
 >
 > **検証:** `ruff check` ✅ / `ruff format` ✅ / `pytest` ✅ **57 passed**（+6）/ `mypy src tests` ✅
@@ -545,6 +547,73 @@ pretty-URL 挙動です。追加設定は要りません。
 
 **B-2 だけは推奨を出せません。** SNS サブスクリプションに必要なので、
 `infra/` を書く前に決めてください。
+
+### ✅ R-16. CI に secrets 用 CMK を渡さないとシークレットの容器が作れない
+
+**[確認済: 実機 apply 2026-11-27]**
+
+prod の `terraform apply` で Secrets Manager の作成が失敗しました。
+
+```
+Error: creating Secrets Manager Secret (s-and-p-prod-anthropic-api-key):
+api error AccessDeniedException: Access to KMS is not allowed
+```
+
+A-65 で「**CI のデプロイロールが API 認証情報を復号できないようにする**」ため、
+`gha-deploy-*` には **state 用 CMK だけ**を渡していました。しかし
+`CreateSecret` に顧客管理キーを指定すると、**呼び出し元の資格情報で KMS を
+使う必要がある**ため、容器すら作れませんでした。
+
+#### 設計の矛盾をどう解いたか
+
+「鍵を一切渡さない」ではなく **「Secrets Manager 経由でだけ使わせる」** に変更しました。
+
+```hcl
+condition {
+  test     = "StringEquals"
+  variable = "kms:ViaService"
+  values   = ["secretsmanager.ap-southeast-2.amazonaws.com"]
+}
+```
+
+`kms:ViaService` を付けると、**CI は KMS を直接叩けません**。そして
+`secretsmanager:GetSecretValue` / `PutSecretValue` は明示的に Deny して
+あるため、**暗号文を手に入れる経路自体がありません**。
+
+| 経路 | 可否 |
+|---|---|
+| KMS を直接呼んで復号 | ❌ `ViaService` で不可 |
+| Secrets Manager から値を取得 | ❌ 明示的 Deny |
+| シークレットの容器を作る | ✅ 必要なのでこれだけ通す |
+
+**A-65 の意図（CI は値を読めない）は保たれています。** 防御の層が
+「鍵を渡さない」から「鍵の使い道を限定する + 値の取得を拒否する」に
+変わっただけです（A-175）。
+
+> この文は **prod のみ**に付きます（`dynamic` ブロックで `each.key == "prod"`
+> のときだけ生成）。dev はシークレットを作らないため不要です（A-140）。
+
+---
+
+### ⏳ R-17. Amplify の `CreateApp` が同日中は再度スロットリングされた
+
+prod の apply では Amplify アプリの作成も失敗しました。
+
+```
+BadRequestException: Rate exceeded while calling CreateApp, please slow down or try again later.
+```
+
+R-7 で既知の制約ですが、**dev の作成（02:03）から約 4 時間後でも解けていません**。
+検証用の `filemap-probe` や Terraform の失敗試行も回数に数えられている可能性があります。
+
+**対処は時間を置いて再 apply するだけ**です。Terraform は作成済みの
+リソースを state で把握しているため、残りだけが作られます。
+
+> **恒久的な対策が必要なら**、Amplify アプリだけ AWS CLI で 1 回作って
+> `terraform import` する方法があります。アプリの作成は環境ごとに 1 回なので、
+> 運用上は再 apply で足ります。
+
+---
 
 ### ✅ R-15. このアカウントは Lambda のメモリ上限が 512MB
 

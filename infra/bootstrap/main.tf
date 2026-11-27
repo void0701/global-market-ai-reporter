@@ -342,11 +342,45 @@ data "aws_iam_policy_document" "deploy" {
     }
   }
   statement {
-    sid     = "UseStateKey"
-    effect  = "Allow"
-    actions = ["kms:Decrypt", "kms:GenerateDataKey"]
-    # **secrets 用 CMK は含めない。** CI は API キーを復号できない（A-65）
+    sid       = "UseStateKey"
+    effect    = "Allow"
+    actions   = ["kms:Decrypt", "kms:GenerateDataKey"]
     resources = [aws_kms_key.state.arn]
+  }
+
+  # > ### secrets 用 CMK は「Secrets Manager 経由でだけ」使わせる
+  # >
+  # > 当初は secrets 用 CMK を一切渡さない設計にしたが、それでは
+  # > **シークレットの容器を作れない**（docs/13 §8 R-16）。
+  # >
+  # >     AccessDeniedException: Access to KMS is not allowed
+  # >
+  # > `CreateSecret` に顧客管理キーを指定すると、呼び出し元の資格情報で
+  # > KMS を使う必要がある。
+  # >
+  # > そこで **`kms:ViaService` で Secrets Manager 経由に限定**する。
+  # > CI は KMS を直接叩けず、かつ `GetSecretValue` は明示的に Deny して
+  # > あるため、**暗号文を手に入れる経路がない**。
+  dynamic "statement" {
+    for_each = each.key == "prod" ? [1] : []
+    content {
+      sid    = "UseSecretsKeyViaSecretsManagerOnly"
+      effect = "Allow"
+      actions = [
+        "kms:Encrypt",
+        "kms:Decrypt",
+        "kms:GenerateDataKey",
+        "kms:DescribeKey",
+        "kms:CreateGrant",
+      ]
+      resources = [aws_kms_key.secrets.arn]
+
+      condition {
+        test     = "StringEquals"
+        variable = "kms:ViaService"
+        values   = ["secretsmanager.${var.region}.amazonaws.com"]
+      }
+    }
   }
   statement {
     sid    = "ManageInfrastructure"
