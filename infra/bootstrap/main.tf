@@ -147,6 +147,14 @@ resource "aws_iam_openid_connect_provider" "github" {
 locals {
   oidc_sub_key = "token.actions.githubusercontent.com:sub"
   oidc_aud_key = "token.actions.githubusercontent.com:aud"
+
+  # sub は「名前＠数値ID」の形で来る（variables.tf の注記 / R-14）。
+  # ワイルドカードを使わずに済むよう、前半を組み立てて共有する
+  oidc_repo = join("", [
+    split("/", var.github_repo)[0], "@", var.github_owner_id,
+    "/",
+    split("/", var.github_repo)[1], "@", var.github_repo_id,
+  ])
 }
 
 data "aws_iam_policy_document" "assume_plan" {
@@ -167,8 +175,8 @@ data "aws_iam_policy_document" "assume_plan" {
       variable = local.oidc_sub_key
       # PR では `pull_request`、main への push では `ref:refs/heads/main`
       values = [
-        "repo:${var.github_repo}:pull_request",
-        "repo:${var.github_repo}:ref:refs/heads/main",
+        "repo:${local.oidc_repo}:pull_request",
+        "repo:${local.oidc_repo}:ref:refs/heads/main",
       ]
     }
   }
@@ -190,7 +198,7 @@ data "aws_iam_policy_document" "assume_deploy_dev" {
     condition {
       test     = "StringEquals"
       variable = local.oidc_sub_key
-      values   = ["repo:${var.github_repo}:ref:refs/heads/main"]
+      values   = ["repo:${local.oidc_repo}:ref:refs/heads/main"]
     }
   }
 }
@@ -214,7 +222,7 @@ data "aws_iam_policy_document" "assume_deploy_prod" {
       # **GitHub Environments が承認ゲート。** `environment:prod` の sub は
       # 必須レビュアーの承認後にしか発行されない（A-42）。ブランチ指定では
       # この性質が得られない
-      values = ["repo:${var.github_repo}:environment:prod"]
+      values = ["repo:${local.oidc_repo}:environment:prod"]
     }
   }
 }

@@ -359,6 +359,7 @@ Phase 2 の設計を、**実際のコードが Lambda で動くか**という観
 > | **R-5** 逐次 S3 GET | ✅ **実装済み。** `S3Publisher.get_many()` で並列化（既定 16 並列） |
 > | **R-6** 失敗通知の検知 | ✅ **1 層目を実装済み。** ハンドラが捕捉して SNS に送り、再送出して `Errors` を立てる。2 層目のアラームは Terraform 側 |
 > | **R-13** IAM の description に日本語が入らない | ✅ **修正済み**（2026-11-27）。実機 apply で発覚。`scripts/check_iam_descriptions.py` を CI に追加して再発を防いだ |
+> | **R-14** OIDC の sub に数値 ID が必要 | ✅ **修正済み**（2026-11-27）。実機のクレームを確認して判明。bootstrap の再 apply が必要 |
 > | R-9 / R-12 | 未着手 |
 >
 > **検証:** `ruff check` ✅ / `ruff format` ✅ / `pytest` ✅ **57 passed**（+6）/ `mypy src tests` ✅
@@ -543,6 +544,62 @@ pretty-URL 挙動です。追加設定は要りません。
 
 **B-2 だけは推奨を出せません。** SNS サブスクリプションに必要なので、
 `infra/` を書く前に決めてください。
+
+### ✅ R-14. GitHub の OIDC `sub` には不変の数値 ID が入る
+
+**[確認済: 実機 2026-11-27]**
+
+bootstrap の apply 後も CI が OIDC でロールを引き受けられませんでした。
+
+```
+Could not assume role with OIDC: Not authorized to perform sts:AssumeRoleWithWebIdentity
+```
+
+信頼ポリシー・ロール ARN・`aud` はすべて一致していました。**GitHub が実際に
+送っているクレームを一時ワークフローで確認**したところ、原因が判明しました。
+
+```
+実際:  repo:void0701@360565473/global-market-ai-reporter@1469782982:ref:refs/heads/main
+想定:  repo:void0701/global-market-ai-reporter:ref:refs/heads/main
+```
+
+**`owner@<owner_id>` と `repo@<repo_id>` の形で数値 ID が入ります。**
+多くの解説記事は名前だけの形を載せていますが、それでは一致しません。
+
+#### なぜこの仕様なのか
+
+**リポジトリ名の使い回し攻撃**を防ぐためです。名前だけで信頼すると、
+リポジトリやオーナーを削除した後に第三者が同じ名前を取得し、信頼関係を
+引き継げてしまいます。数値 ID は再利用されないため、ID を含めるほうが安全です。
+
+#### 切り分けが難しい理由
+
+`Not authorized to perform sts:AssumeRoleWithWebIdentity` は
+
+- (a) 信頼ポリシーの `sub` / `aud` が合っていない
+- (b) SCP で STS の操作自体が拒否されている
+
+の**どちらでも同じ文面**になり、クライアント側からは区別できません。
+S0 スパイクは OIDC プロバイダとロールの**作成**しか検証しておらず、
+**実際に引き受けられるか**は未検証でした。ここが穴でした。
+
+#### 対処
+
+ID を変数化し、`locals.oidc_repo` で前半を組み立てて 3 ロールで共有します
+（A-171）。ワイルドカードは使いません。
+
+```bash
+gh api repos/<owner>/<repo> --jq '"owner_id: \(.owner.id)  repo_id: \(.id)"'
+```
+
+> **リポジトリを作り直すと ID が変わり、デプロイが失敗します**（fail close）。
+> その場合は `github_owner_id` / `github_repo_id` を更新して bootstrap を
+> 再 apply してください。
+
+**`environment:prod` の形は prod デプロイ時に確認します。** 前半の
+`repo:owner@id/name@id` は同じなので通る見込みですが、未検証です。
+
+---
 
 ### ✅ R-13. IAM の `description` に日本語を入れると apply が 400 で落ちる
 
